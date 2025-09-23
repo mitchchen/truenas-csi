@@ -12,6 +12,8 @@ import (
 	"k8s.io/klog/v2"
 )
 
+type APIMethod string
+
 const (
 	INVALID_REQUEST       = -32600
 	METHOD_NOT_FOUND      = -32601
@@ -23,10 +25,10 @@ const (
 )
 
 type APIRequest struct {
-	JsonRPC string `json:"jsonrpc"`
-	ID      string `json:"id"`
-	Method  string `json:"method"`
-	Params  []any  `json:"params"`
+	JsonRPC string    `json:"jsonrpc"`
+	ID      string    `json:"id"`
+	Method  APIMethod `json:"method"`
+	Params  []any     `json:"params"`
 }
 
 type APIResponse struct {

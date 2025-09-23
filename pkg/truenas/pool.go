@@ -8,6 +8,13 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const (
+	POOL_CREATE APIMethod = "pool.create"
+	POOL_QUERY  APIMethod = "pool.query"
+)
+
+const POOL_CREATE_TIMEOUT = 5 * time.Minute
+
 // TODO:Change when it is eventually changed
 type PoolCreate struct {
 	Name                 string  `json:"name"`
@@ -34,20 +41,20 @@ func (c *APIClient) CreatePool(ctx context.Context, opts PoolCreate) error {
 	}
 
 	req := APIRequest{
-		Method: "pool.create",
+		Method: POOL_CREATE,
 		Params: []any{opts},
 	}
 
-	return c.CallWithTimeout(ctx, req, nil, 5*time.Minute)
+	return c.CallWithTimeout(ctx, req, nil, POOL_CREATE_TIMEOUT)
 }
 
 func (c *APIClient) GetPools(ctx context.Context, filters []any) (map[string]any, error) {
-	klog.V(4).Info("Getting existing pools")
+	klog.V(2).Info("Getting existing pools")
 
 	var res map[string]any
 
 	req := APIRequest{
-		Method: "pool.query",
+		Method: POOL_QUERY,
 		Params: filters,
 	}
 	err := c.Call(ctx, req, &res)
