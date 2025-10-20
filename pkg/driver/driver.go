@@ -37,8 +37,13 @@ func NewDriver(endpoint, nodeID string) *Driver {
 	}
 }
 
-func (d *Driver) Run() error {
-	// Parse the endpoint
+func (d *Driver) Run(ctx context.Context) error {
+	defer func() {
+		if r := recover(); r != nil {
+			klog.V(2).ErrorS(nil, "Recovered from panic in CSI driver")
+		}
+	}()
+
 	scheme, addr, err := parseEndpoint(d.endpoint)
 	if err != nil {
 		return err
@@ -51,34 +56,50 @@ func (d *Driver) Run() error {
 		}
 	}
 
-	// Create listener
 	listener, err := net.Listen(scheme, addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
+
+	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	opts := []grpc.ServerOption{
 		grpc.UnaryInterceptor(logGRPC),
 	}
 	d.srv = grpc.NewServer(opts...)
 
-	klog.Infof("Starting CSI driver %s version %s on endpoint %s", d.name, d.version, d.endpoint)
+	klog.V(2).Infof("Starting CSI driver %s version %s on endpoint %s", d.name, d.version, d.endpoint)
 
-	go d.handleShutdown()
+	serverErr := make(chan error, 1)
 
-	return d.srv.Serve(listener)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				klog.V(2).ErrorS(nil, "Recovered from panic in gRPC server")
+				serverErr <- fmt.Errorf("server panic: %v", r)
+			}
+		}()
+		if err := d.srv.Serve(listener); err != nil {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		klog.V(2).Info("Shutdown signal recieved, stopping CSI driver")
+		d.Stop()
+		return nil
+	case err := <-serverErr:
+		klog.V(2).ErrorS(err, "Server error occurred")
+		d.Stop()
+		return fmt.Errorf("server error: %v", err)
+	}
 }
 
 func (d *Driver) Stop() {
-	klog.Info("Stopping CSI driver server")
+	klog.V(2).Info("Stopping CSI driver server")
 	d.srv.GracefulStop()
-}
-
-func (d *Driver) handleShutdown() {
-	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
-	<-sigc
-	d.Stop()
 }
 
 func parseEndpoint(ep string) (string, string, error) {
@@ -110,7 +131,7 @@ func logGRPC(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler g
 	klog.V(2).Infof("GRPC call: %s", info.FullMethod)
 	resp, err := handler(ctx, req)
 	if err != nil {
-		klog.Errorf("GRPC error: %s: %v", info.FullMethod, err)
+		klog.V(2).ErrorS(err, "GRPC error:"+info.FullMethod)
 	}
 	return resp, err
 }
