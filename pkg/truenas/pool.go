@@ -36,6 +36,12 @@ type PoolCreate struct {
 	Topology struct{} `json:"topology"`
 }
 
+type PoolExport struct {
+	Cascade         bool `json:"cascade"`
+	RestartServices bool `json:"restart_service"`
+	Destroy         bool `json:"destroy"`
+}
+
 func (c *APIClient) CreatePool(ctx context.Context, opts PoolCreate) error {
 	klog.V(2).Infof("Creating ZFS pool: %s", opts.Name)
 
@@ -132,19 +138,15 @@ func (c *APIClient) RemovePoolByName(ctx context.Context, poolName string, casca
 	return c.RemovePool(ctx, poolID, options)
 }
 
-func (c *APIClient) ExportPool(ctx context.Context, poolID int, force bool) error {
+func (c *APIClient) ExportPool(ctx context.Context, poolID int, opts PoolExport) error {
 	klog.V(2).Infof("Exporting pool: %d", poolID)
 
-	options := map[string]any{
-		"cascade": false,
-		"destroy": false,
+	req := APIRequest{
+		Method: "pool.export",
+		Params: []any{poolID, opts},
 	}
 
-	if force {
-		options["force"] = true
-	}
-
-	if err := c.RemovePool(ctx, poolID, options); err != nil {
+	if err := c.Call(ctx, req, nil); err != nil {
 		return fmt.Errorf("failed to export pool %d: %w", poolID, err)
 	}
 
@@ -152,11 +154,11 @@ func (c *APIClient) ExportPool(ctx context.Context, poolID int, force bool) erro
 	return nil
 }
 
-func (c *APIClient) ExportPoolByName(ctx context.Context, poolName string, force bool) error {
+func (c *APIClient) ExportPoolByName(ctx context.Context, poolName string, opts PoolExport) error {
 	poolID, _, err := c.GetPoolByName(ctx, poolName)
 	if err != nil {
 		return err
 	}
 
-	return c.ExportPool(ctx, poolID, force)
+	return c.ExportPool(ctx, poolID, opts)
 }
