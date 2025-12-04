@@ -27,3 +27,10 @@ go.work.sum
 # Editor/IDE
 .idea/
 .vscode/
+
+# Claude Files
+.claude/
+CLAUDE.md
+
+# Deploy files
+test-deploy.yaml

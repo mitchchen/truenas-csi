@@ -1,0 +1,516 @@
+---
+# Namespace for CSI driver
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: truenas-csi
+
+---
+# ServiceAccount for the CSI driver
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: truenas-csi-controller-sa
+  namespace: truenas-csi
+
+---
+# ServiceAccount for node plugin
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: truenas-csi-node-sa
+  namespace: truenas-csi
+
+---
+# ClusterRole for CSI controller
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: truenas-csi-controller-role
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims/status"]
+    verbs: ["update", "patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csinodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch", "create", "update", "patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots/status"]
+    verbs: ["update", "patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents/status"]
+    verbs: ["update", "patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments/status"]
+    verbs: ["patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "watch", "list", "delete", "update", "create"]
+
+---
+# ClusterRoleBinding for CSI controller
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: truenas-csi-controller-binding
+subjects:
+  - kind: ServiceAccount
+    name: truenas-csi-controller-sa
+    namespace: truenas-csi
+roleRef:
+  kind: ClusterRole
+  name: truenas-csi-controller-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ClusterRole for CSI node
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: truenas-csi-node-role
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["get", "list", "watch"]
+
+---
+# ClusterRoleBinding for CSI node
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: truenas-csi-node-binding
+subjects:
+  - kind: ServiceAccount
+    name: truenas-csi-node-sa
+    namespace: truenas-csi
+roleRef:
+  kind: ClusterRole
+  name: truenas-csi-node-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# CSI Driver object
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: csi.truenas.io
+spec:
+  attachRequired: true
+  podInfoOnMount: true
+  fsGroupPolicy: File
+  volumeLifecycleModes:
+    - Persistent
+    - Ephemeral
+
+---
+# Secret for TrueNAS API Key authentication (recommended)
+# Use this OR truenas-credentials below (not both)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: truenas-api-credentials
+  namespace: truenas-csi
+type: Opaque
+stringData:
+  api-key: "your-truenas-api-key-here"
+
+---
+# Secret for TrueNAS username/password authentication (alternative)
+# Use this OR truenas-api-credentials above (not both)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: truenas-credentials
+  namespace: truenas-csi
+type: Opaque
+stringData:
+  username: "your-username"
+  password: "your-password"
+
+---
+# ConfigMap for driver configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: truenas-csi-config
+  namespace: truenas-csi
+data:
+  truenasURL: "ws://10.0.0.136/api/current"
+  defaultPool: "tank"
+  nfsServer: "10.0.0.136"
+  iscsiPortal: "10.0.0.136:3260"
+  # iscsiIQNBase: "iqn.2024-01.com.example"  # Optional: Custom IQN prefix (default: iqn.2000-01.io.truenas)
+
+---
+# Controller Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: truenas-csi-controller
+  namespace: truenas-csi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: truenas-csi-controller
+  template:
+    metadata:
+      labels:
+        app: truenas-csi-controller
+    spec:
+      serviceAccountName: truenas-csi-controller-sa
+      containers:
+        # CSI Controller
+        - name: csi-controller
+          image: truenas/truenas-csi-driver:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--endpoint=$(CSI_ENDPOINT)"
+            - "--truenas-url=$(TRUENAS_URL)"
+            - "--truenas-api-key=$(TRUENAS_API_KEY)"
+            - "--default-pool=$(TRUENAS_DEFAULT_POOL)"
+            - "--nfs-server=$(TRUENAS_NFS_SERVER)"
+            - "--iscsi-portal=$(TRUENAS_ISCSI_PORTAL)"
+            - "--iscsi-iqn-base=$(TRUENAS_ISCSI_IQN_BASE)"
+            - "--node-id=$(NODE_ID)"
+            - "--v=4"
+          env:
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+            - name: TRUENAS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: truenas-csi-config
+                  key: truenasURL
+            # API Key authentication (recommended) - requires truenas-api-credentials secret
+            - name: TRUENAS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: truenas-api-credentials
+                  key: api-key
+                  optional: true
+            # Username/Password authentication (alternative) - requires truenas-credentials secret
+            - name: TRUENAS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: truenas-credentials
+                  key: username
+                  optional: true
+            - name: TRUENAS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: truenas-credentials
+                  key: password
+                  optional: true
+            - name: TRUENAS_DEFAULT_POOL
+              valueFrom:
+                configMapKeyRef:
+                  name: truenas-csi-config
+                  key: defaultPool
+            - name: TRUENAS_NFS_SERVER
+              valueFrom:
+                configMapKeyRef:
+                  name: truenas-csi-config
+                  key: nfsServer
+            - name: TRUENAS_ISCSI_PORTAL
+              valueFrom:
+                configMapKeyRef:
+                  name: truenas-csi-config
+                  key: iscsiPortal
+            - name: TRUENAS_ISCSI_IQN_BASE
+              valueFrom:
+                configMapKeyRef:
+                  name: truenas-csi-config
+                  key: iscsiIQNBase
+                  optional: true
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+        
+        # CSI Provisioner
+        - name: csi-provisioner
+          image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.0
+          args:
+            - "--csi-address=$(ADDRESS)"
+            - "--v=5"
+            - "--feature-gates=Topology=true"
+            - "--extra-create-metadata"
+            - "--leader-election=true"
+            - "--default-fstype=ext4"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+              
+        # CSI Attacher
+        - name: csi-attacher
+          image: registry.k8s.io/sig-storage/csi-attacher:v4.4.0
+          args:
+            - "--csi-address=$(ADDRESS)"
+            - "--v=5"
+            - "--leader-election=true"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+              
+        # CSI Snapshotter
+        - name: csi-snapshotter
+          image: registry.k8s.io/sig-storage/csi-snapshotter:v6.3.0
+          args:
+            - "--csi-address=$(ADDRESS)"
+            - "--v=5"
+            - "--leader-election=true"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+              
+        # CSI Resizer
+        - name: csi-resizer
+          image: registry.k8s.io/sig-storage/csi-resizer:v1.9.0
+          args:
+            - "--csi-address=$(ADDRESS)"
+            - "--v=5"
+            - "--leader-election=true"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+              
+        # Liveness Probe
+        - name: liveness-probe
+          image: registry.k8s.io/sig-storage/livenessprobe:v2.11.0
+          args:
+            - "--csi-address=/csi/csi.sock"
+            - "--health-port=9808"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+              
+      volumes:
+        - name: socket-dir
+          emptyDir: {}
+
+---
+# Node DaemonSet
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: truenas-csi-node
+  namespace: truenas-csi
+spec:
+  selector:
+    matchLabels:
+      app: truenas-csi-node
+  template:
+    metadata:
+      labels:
+        app: truenas-csi-node
+    spec:
+      serviceAccountName: truenas-csi-node-sa
+      hostNetwork: true
+      hostPID: true
+      containers:
+        # CSI Node Driver
+        - name: csi-node
+          image: truenas/truenas-csi-driver:latest
+          imagePullPolicy: IfNotPresent
+          lifecycle:
+            postStart:
+              exec:
+                command: ["/bin/sh", "-c", "mkdir -p /run/lock/iscsi && /usr/sbin/iscsid || true"]
+          securityContext:
+            privileged: true
+          args:
+            - "--endpoint=$(CSI_ENDPOINT)"
+            - "--truenas-url=$(TRUENAS_URL)"
+            - "--truenas-api-key=$(TRUENAS_API_KEY)"
+            - "--default-pool=$(TRUENAS_DEFAULT_POOL)"
+            - "--nfs-server=$(TRUENAS_NFS_SERVER)"
+            - "--iscsi-portal=$(TRUENAS_ISCSI_PORTAL)"
+            - "--iscsi-iqn-base=$(TRUENAS_ISCSI_IQN_BASE)"
+            - "--node-id=$(NODE_ID)"
+            - "--v=4"
+          env:
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+            - name: TRUENAS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: truenas-csi-config
+                  key: truenasURL
+            # API Key authentication (recommended) - requires truenas-api-credentials secret
+            - name: TRUENAS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: truenas-api-credentials
+                  key: api-key
+                  optional: true
+            # Username/Password authentication (alternative) - requires truenas-credentials secret
+            - name: TRUENAS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: truenas-credentials
+                  key: username
+                  optional: true
+            - name: TRUENAS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: truenas-credentials
+                  key: password
+                  optional: true
+            - name: TRUENAS_DEFAULT_POOL
+              valueFrom:
+                configMapKeyRef:
+                  name: truenas-csi-config
+                  key: defaultPool
+            - name: TRUENAS_NFS_SERVER
+              valueFrom:
+                configMapKeyRef:
+                  name: truenas-csi-config
+                  key: nfsServer
+            - name: TRUENAS_ISCSI_PORTAL
+              valueFrom:
+                configMapKeyRef:
+                  name: truenas-csi-config
+                  key: iscsiPortal
+            - name: TRUENAS_ISCSI_IQN_BASE
+              valueFrom:
+                configMapKeyRef:
+                  name: truenas-csi-config
+                  key: iscsiIQNBase
+                  optional: true
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: pods-mount-dir
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+            - name: device-dir
+              mountPath: /dev
+            - name: iscsi-dir
+              mountPath: /etc/iscsi
+              mountPropagation: Bidirectional
+            - name: host-root
+              mountPath: /host
+              mountPropagation: Bidirectional
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+              
+        # Node Driver Registrar
+        - name: csi-node-driver-registrar
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.9.0
+          args:
+            - "--csi-address=$(ADDRESS)"
+            - "--kubelet-registration-path=$(DRIVER_REG_SOCK_PATH)"
+            - "--v=5"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+            - name: DRIVER_REG_SOCK_PATH
+              value: /var/lib/kubelet/plugins/csi.truenas.io/csi.sock
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+              
+        # Liveness Probe
+        - name: liveness-probe
+          image: registry.k8s.io/sig-storage/livenessprobe:v2.11.0
+          args:
+            - "--csi-address=/csi/csi.sock"
+            - "--health-port=9808"
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+              
+      volumes:
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry/
+            type: DirectoryOrCreate
+        - name: plugin-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/csi.truenas.io/
+            type: DirectoryOrCreate
+        - name: pods-mount-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: Directory
+        - name: device-dir
+          hostPath:
+            path: /dev
+        - name: iscsi-dir
+          hostPath:
+            path: /etc/iscsi
+            type: Directory
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
