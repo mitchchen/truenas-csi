@@ -96,121 +96,32 @@ check_cluster_and_driver() {
     fi
 }
 
-# Prompt for TrueNAS configuration
-# Checks environment variables first, prompts only if not set
-configure_truenas() {
-    print_header "TrueNAS Configuration"
+# Validate YAML configuration
+validate_yaml_config() {
+    print_header "Configuration Check"
 
-    # Determine authentication method from environment variables
-    local has_api_key=false
-    local has_username_password=false
+    print_info "This demo uses the configuration from:"
+    echo "  deploy/truenas-csi-driver.yaml"
+    echo ""
+    print_warning "Before running this demo, please ensure you have edited the YAML file with:"
+    echo "  1. TrueNAS connection details (ConfigMap: truenas-csi-config)"
+    echo "  2. TrueNAS API key (Secret: truenas-api-credentials)"
+    echo ""
 
-    if [ -n "$TRUENAS_API_KEY" ]; then
-        has_api_key=true
-    fi
-
-    if [ -n "$TRUENAS_USERNAME" ] && [ -n "$TRUENAS_PASSWORD" ]; then
-        has_username_password=true
-    fi
-
-    # Check if we have credentials from environment
-    if [ -n "$TRUENAS_IP" ] && { [ "$has_api_key" = true ] || [ "$has_username_password" = true ]; }; then
-        print_info "Using configuration from environment variables"
-        TRUENAS_POOL=${TRUENAS_POOL:-tank}
-
-        if [ "$has_api_key" = true ]; then
-            print_info "Authentication: API Key"
-            AUTH_METHOD="api-key"
-        else
-            print_info "Authentication: Username/Password"
-            AUTH_METHOD="username-password"
-        fi
-
-        # Determine protocol
-        if [[ ${TRUENAS_USE_WSS:-n} =~ ^[Yy]$ ]]; then
-            TRUENAS_URL="wss://${TRUENAS_IP}/api/current"
-        else
-            TRUENAS_URL="ws://${TRUENAS_IP}/api/current"
-        fi
-    else
-        print_info "Please provide your TrueNAS connection details:"
-        print_info "(Or set environment variables: TRUENAS_IP + TRUENAS_API_KEY)"
-        print_info "(Or set: TRUENAS_IP + TRUENAS_USERNAME + TRUENAS_PASSWORD)"
+    read -p "Have you configured deploy/truenas-csi-driver.yaml with your TrueNAS settings? [y/N]: " CONFIGURED
+    if [[ ! $CONFIGURED =~ ^[Yy]$ ]]; then
         echo ""
-
-        # Prompt for IP
-        if [ -z "$TRUENAS_IP" ]; then
-            read -p "TrueNAS IP address: " TRUENAS_IP
-        else
-            print_info "Using TRUENAS_IP from environment: $TRUENAS_IP"
-        fi
-
-        # Prompt for authentication method if not set via env
-        if [ "$has_api_key" = false ] && [ "$has_username_password" = false ]; then
-            echo ""
-            echo "Choose authentication method:"
-            echo "  1) API Key (recommended)"
-            echo "  2) Username/Password"
-            read -p "Choice [1-2]: " AUTH_CHOICE
-
-            if [ "$AUTH_CHOICE" = "1" ]; then
-                read -p "TrueNAS API Key: " TRUENAS_API_KEY
-                AUTH_METHOD="api-key"
-            else
-                read -p "TrueNAS Username: " TRUENAS_USERNAME
-                read -sp "TrueNAS Password: " TRUENAS_PASSWORD
-                echo ""
-                AUTH_METHOD="username-password"
-            fi
-        elif [ "$has_api_key" = true ]; then
-            print_info "Using TRUENAS_API_KEY from environment"
-            AUTH_METHOD="api-key"
-        else
-            print_info "Using TRUENAS_USERNAME/TRUENAS_PASSWORD from environment"
-            AUTH_METHOD="username-password"
-        fi
-
-        # Pool configuration
-        if [ -z "$TRUENAS_POOL" ]; then
-            read -p "Storage Pool name (default: tank): " TRUENAS_POOL
-            TRUENAS_POOL=${TRUENAS_POOL:-tank}
-        else
-            print_info "Using TRUENAS_POOL from environment: $TRUENAS_POOL"
-        fi
-
-        # Determine protocol (ws or wss)
-        if [ -z "$TRUENAS_USE_WSS" ]; then
-            read -p "Use secure WebSocket (wss)? [y/N]: " USE_WSS
-        else
-            USE_WSS=$TRUENAS_USE_WSS
-        fi
-
-        if [[ $USE_WSS =~ ^[Yy]$ ]]; then
-            TRUENAS_URL="wss://${TRUENAS_IP}/api/current"
-        else
-            TRUENAS_URL="ws://${TRUENAS_IP}/api/current"
-        fi
-    fi
-
-    echo ""
-    print_info "Configuration:"
-    echo "  TrueNAS URL: $TRUENAS_URL"
-    if [ "$AUTH_METHOD" = "api-key" ]; then
-        echo "  API Key: ${TRUENAS_API_KEY:0:10}..."
-    else
-        echo "  Username: $TRUENAS_USERNAME"
-        echo "  Password: ${TRUENAS_PASSWORD:0:3}..."
-    fi
-    echo "  Pool: $TRUENAS_POOL"
-    echo "  NFS Server: $TRUENAS_IP"
-    echo "  iSCSI Portal: ${TRUENAS_IP}:3260"
-    echo ""
-
-    read -p "Is this correct? [Y/n]: " CONFIRM
-    if [[ $CONFIRM =~ ^[Nn]$ ]]; then
-        print_error "Configuration cancelled"
+        print_error "Please edit deploy/truenas-csi-driver.yaml first:"
+        echo ""
+        echo "  1. Update ConfigMap 'truenas-csi-config' with your TrueNAS IP and pool"
+        echo "  2. Update Secret 'truenas-api-credentials' with your TrueNAS API key"
+        echo "  3. Run this demo again"
+        echo ""
         exit 1
     fi
+
+    print_success "Configuration confirmed"
+    echo ""
 }
 
 # Create Kind cluster
@@ -265,57 +176,44 @@ build_and_load_image() {
 deploy_driver() {
     print_header "Deploying TrueNAS CSI Driver"
 
-    # Create namespace
-    print_info "Creating namespace..."
-    kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-
-    # Create secret based on authentication method
-    if [ "$AUTH_METHOD" = "api-key" ]; then
-        print_info "Creating TrueNAS API credentials secret (API key)..."
-        kubectl create secret generic truenas-api-credentials \
-            --namespace=${NAMESPACE} \
-            --from-literal=api-key="${TRUENAS_API_KEY}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-    else
-        print_info "Creating TrueNAS credentials secret (username/password)..."
-        kubectl create secret generic truenas-credentials \
-            --namespace=${NAMESPACE} \
-            --from-literal=username="${TRUENAS_USERNAME}" \
-            --from-literal=password="${TRUENAS_PASSWORD}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-    fi
-
-    # Create ConfigMap with direct keys (not nested YAML)
-    print_info "Creating driver configuration..."
-    cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: truenas-csi-config
-  namespace: ${NAMESPACE}
-data:
-  truenasURL: "${TRUENAS_URL}"
-  defaultPool: "${TRUENAS_POOL}"
-  nfsServer: "${TRUENAS_IP}"
-  iscsiPortal: "${TRUENAS_IP}:3260"
-EOF
+    # Deploy using the pre-configured YAML
+    print_info "Deploying driver from deploy/truenas-csi-driver.yaml..."
 
     # Update deployment manifest to use demo image and IfNotPresent pull policy
-    print_info "Updating deployment manifest..."
     sed -e "s|truenas/truenas-csi-driver:latest|truenas/truenas-csi-driver:demo|g" \
         -e "s|imagePullPolicy: Always|imagePullPolicy: IfNotPresent|g" \
         deploy/truenas-csi-driver.yaml | kubectl apply -f -
 
+    print_success "Deployment manifest applied"
+    echo ""
+
     print_info "Waiting for CSI driver to be ready..."
-    kubectl wait --namespace=${NAMESPACE} \
+    echo "  This may take up to 2 minutes..."
+    echo ""
+
+    if kubectl wait --namespace=${NAMESPACE} \
         --for=condition=ready pod \
         --selector=app=truenas-csi-controller \
-        --timeout=120s
+        --timeout=120s 2>/dev/null; then
+        print_success "Controller pod is ready"
+    else
+        print_error "Controller pod failed to start"
+        print_info "Checking controller logs..."
+        kubectl logs -n ${NAMESPACE} -l app=truenas-csi-controller -c csi-controller --tail=20 2>/dev/null || echo "No logs available"
+        return 1
+    fi
 
-    kubectl wait --namespace=${NAMESPACE} \
+    if kubectl wait --namespace=${NAMESPACE} \
         --for=condition=ready pod \
         --selector=app=truenas-csi-node \
-        --timeout=120s
+        --timeout=120s 2>/dev/null; then
+        print_success "Node pods are ready"
+    else
+        print_error "Node pods failed to start"
+        print_info "Checking node logs..."
+        kubectl logs -n ${NAMESPACE} -l app=truenas-csi-node -c csi-node --tail=20 2>/dev/null || echo "No logs available"
+        return 1
+    fi
 
     print_success "CSI driver deployed successfully"
 
@@ -435,10 +333,12 @@ run_setup_if_needed() {
 
     print_header "Initial Setup Required"
 
+    # Validate YAML is configured
+    validate_yaml_config
+
     if [ $status -eq 1 ]; then
         print_info "No existing cluster found. Setting up from scratch..."
         echo ""
-        configure_truenas
         create_cluster
         build_and_load_image
         deploy_driver
@@ -447,7 +347,6 @@ run_setup_if_needed() {
     elif [ $status -eq 2 ]; then
         print_info "Cluster exists but driver not found. Deploying driver..."
         echo ""
-        configure_truenas
         build_and_load_image
         deploy_driver
         setup_storage_classes

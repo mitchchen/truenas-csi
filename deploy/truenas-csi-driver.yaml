@@ -139,8 +139,7 @@ spec:
     - Ephemeral
 
 ---
-# Secret for TrueNAS API Key authentication (recommended)
-# Use this OR truenas-credentials below (not both)
+# Secret for TrueNAS API Key authentication
 apiVersion: v1
 kind: Secret
 metadata:
@@ -148,20 +147,7 @@ metadata:
   namespace: truenas-csi
 type: Opaque
 stringData:
-  api-key: "your-truenas-api-key-here"
-
----
-# Secret for TrueNAS username/password authentication (alternative)
-# Use this OR truenas-api-credentials above (not both)
-apiVersion: v1
-kind: Secret
-metadata:
-  name: truenas-credentials
-  namespace: truenas-csi
-type: Opaque
-stringData:
-  username: "your-username"
-  password: "your-password"
+  api-key: "your-api-key"
 
 ---
 # ConfigMap for driver configuration
@@ -171,11 +157,12 @@ metadata:
   name: truenas-csi-config
   namespace: truenas-csi
 data:
-  truenasURL: "ws://10.0.0.136/api/current"
+  truenasURL: "wss://10.0.0.136/api/current"
+  truenasInsecure: "true"  # Set to "true" for self-signed certificates, "false" or remove for valid certs
   defaultPool: "tank"
   nfsServer: "10.0.0.136"
   iscsiPortal: "10.0.0.136:3260"
-  # iscsiIQNBase: "iqn.2024-01.com.example"  # Optional: Custom IQN prefix (default: iqn.2000-01.io.truenas)
+  iscsiIQNBase: "iqn.2000-01.io.truenas"  # Optional: Custom IQN prefix (default: iqn.2000-01.io.truenas)
 
 ---
 # Controller Deployment
@@ -202,12 +189,6 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - "--endpoint=$(CSI_ENDPOINT)"
-            - "--truenas-url=$(TRUENAS_URL)"
-            - "--truenas-api-key=$(TRUENAS_API_KEY)"
-            - "--default-pool=$(TRUENAS_DEFAULT_POOL)"
-            - "--nfs-server=$(TRUENAS_NFS_SERVER)"
-            - "--iscsi-portal=$(TRUENAS_ISCSI_PORTAL)"
-            - "--iscsi-iqn-base=$(TRUENAS_ISCSI_IQN_BASE)"
             - "--node-id=$(NODE_ID)"
             - "--v=4"
           env:
@@ -218,26 +199,12 @@ spec:
                 configMapKeyRef:
                   name: truenas-csi-config
                   key: truenasURL
-            # API Key authentication (recommended) - requires truenas-api-credentials secret
+            # API Key authentication
             - name: TRUENAS_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: truenas-api-credentials
                   key: api-key
-                  optional: true
-            # Username/Password authentication (alternative) - requires truenas-credentials secret
-            - name: TRUENAS_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: truenas-credentials
-                  key: username
-                  optional: true
-            - name: TRUENAS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: truenas-credentials
-                  key: password
-                  optional: true
             - name: TRUENAS_DEFAULT_POOL
               valueFrom:
                 configMapKeyRef:
@@ -258,6 +225,12 @@ spec:
                 configMapKeyRef:
                   name: truenas-csi-config
                   key: iscsiIQNBase
+                  optional: true
+            - name: TRUENAS_INSECURE_SKIP_VERIFY
+              valueFrom:
+                configMapKeyRef:
+                  name: truenas-csi-config
+                  key: truenasInsecure
                   optional: true
             - name: NODE_ID
               valueFrom:
@@ -379,12 +352,6 @@ spec:
             privileged: true
           args:
             - "--endpoint=$(CSI_ENDPOINT)"
-            - "--truenas-url=$(TRUENAS_URL)"
-            - "--truenas-api-key=$(TRUENAS_API_KEY)"
-            - "--default-pool=$(TRUENAS_DEFAULT_POOL)"
-            - "--nfs-server=$(TRUENAS_NFS_SERVER)"
-            - "--iscsi-portal=$(TRUENAS_ISCSI_PORTAL)"
-            - "--iscsi-iqn-base=$(TRUENAS_ISCSI_IQN_BASE)"
             - "--node-id=$(NODE_ID)"
             - "--v=4"
           env:
@@ -395,26 +362,12 @@ spec:
                 configMapKeyRef:
                   name: truenas-csi-config
                   key: truenasURL
-            # API Key authentication (recommended) - requires truenas-api-credentials secret
+            # API Key authentication
             - name: TRUENAS_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: truenas-api-credentials
                   key: api-key
-                  optional: true
-            # Username/Password authentication (alternative) - requires truenas-credentials secret
-            - name: TRUENAS_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: truenas-credentials
-                  key: username
-                  optional: true
-            - name: TRUENAS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: truenas-credentials
-                  key: password
-                  optional: true
             - name: TRUENAS_DEFAULT_POOL
               valueFrom:
                 configMapKeyRef:
@@ -435,6 +388,12 @@ spec:
                 configMapKeyRef:
                   name: truenas-csi-config
                   key: iscsiIQNBase
+                  optional: true
+            - name: TRUENAS_INSECURE_SKIP_VERIFY
+              valueFrom:
+                configMapKeyRef:
+                  name: truenas-csi-config
+                  key: truenasInsecure
                   optional: true
             - name: NODE_ID
               valueFrom:

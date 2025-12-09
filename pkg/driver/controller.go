@@ -322,19 +322,25 @@ func (s *ControllerServer) createVolumeFromSource(ctx context.Context, req *csi.
 			return nil, status.Errorf(codes.Internal, "failed to clone snapshot: %v", err)
 		}
 
-		// Set refquota on the cloned dataset to match requested capacity
+		// Set capacity on the cloned dataset to match requested size
+		// Use volsize for iSCSI (ZVOL) or refquota for NFS (filesystem)
 		requiredBytes := req.CapacityRange.RequiredBytes
 		if requiredBytes > 0 {
-			klog.V(4).Infof("createVolumeFromSource: Setting refquota to %d bytes on dataset %s", requiredBytes, datasetPath)
-			updateOpts := &client.DatasetUpdateOptions{
-				RefQuota: &requiredBytes,
+			updateOpts := &client.DatasetUpdateOptions{}
+			if protocol == ISCSI {
+				klog.V(4).Infof("createVolumeFromSource: Setting volsize and refreservation to %d bytes on restored ZVOL %s", requiredBytes, datasetPath)
+				updateOpts.Volsize = &requiredBytes
+				updateOpts.RefReservation = &requiredBytes // Make it thick provisioned like the original
+			} else {
+				klog.V(4).Infof("createVolumeFromSource: Setting refquota to %d bytes on restored dataset %s", requiredBytes, datasetPath)
+				updateOpts.RefQuota = &requiredBytes
 			}
 			err = s.driver.client.UpdateDataset(ctx, datasetPath, updateOpts)
 			if err != nil {
-				klog.Errorf("createVolumeFromSource: Failed to set refquota on dataset %s: %v", datasetPath, err)
-				return nil, status.Errorf(codes.Internal, "failed to set quota on restored volume: %v", err)
+				klog.Errorf("createVolumeFromSource: Failed to set capacity on restored dataset %s: %v", datasetPath, err)
+				return nil, status.Errorf(codes.Internal, "failed to set capacity on restored volume: %v", err)
 			}
-			klog.V(4).Infof("createVolumeFromSource: Successfully set refquota on dataset %s", datasetPath)
+			klog.V(4).Infof("createVolumeFromSource: Successfully set capacity on restored dataset %s", datasetPath)
 		}
 
 		dataset, err := s.driver.client.GetDataset(ctx, datasetPath)
@@ -344,7 +350,7 @@ func (s *ControllerServer) createVolumeFromSource(ctx context.Context, req *csi.
 
 		var volInfo *VolumeInfo
 		if protocol == ISCSI {
-			volInfo, err = s.createISCSITargetForClone(ctx, volumeID, datasetPath, dataset, parameters)
+			volInfo, err = s.createISCSITargetForClone(ctx, volumeID, datasetPath, requiredBytes, parameters)
 		} else {
 			volInfo, err = s.createNFSShareForClone(ctx, volumeID, datasetPath, dataset, parameters)
 		}
@@ -357,10 +363,15 @@ func (s *ControllerServer) createVolumeFromSource(ctx context.Context, req *csi.
 		volInfo.ContentSource = contentSource
 		s.driver.storeVolumeInfo(volInfo)
 
+		capacityBytes := dataset.RefQuota
+		if protocol == ISCSI {
+			capacityBytes = requiredBytes
+		}
+
 		return &csi.CreateVolumeResponse{
 			Volume: &csi.Volume{
 				VolumeId:      volumeID,
-				CapacityBytes: dataset.RefQuota,
+				CapacityBytes: capacityBytes,
 				VolumeContext: parameters,
 				ContentSource: contentSource,
 			},
@@ -403,19 +414,25 @@ func (s *ControllerServer) createVolumeFromSource(ctx context.Context, req *csi.
 		s.driver.client.DeleteSnapshot(ctx, snapshot.ID)
 		klog.V(4).Infof("createVolumeFromSource: Deleted temporary snapshot %s", snapshot.ID)
 
-		// Set refquota on the cloned dataset to match requested capacity
+		// Set capacity on the cloned dataset to match requested size
+		// Use volsize for iSCSI (ZVOL) or refquota for NFS (filesystem)
 		requiredBytes := req.CapacityRange.RequiredBytes
 		if requiredBytes > 0 {
-			klog.V(4).Infof("createVolumeFromSource: Setting refquota to %d bytes on cloned dataset %s", requiredBytes, datasetPath)
-			updateOpts := &client.DatasetUpdateOptions{
-				RefQuota: &requiredBytes,
+			updateOpts := &client.DatasetUpdateOptions{}
+			if protocol == ISCSI {
+				klog.V(4).Infof("createVolumeFromSource: Setting volsize and refreservation to %d bytes on cloned ZVOL %s", requiredBytes, datasetPath)
+				updateOpts.Volsize = &requiredBytes
+				updateOpts.RefReservation = &requiredBytes // Make it thick provisioned like the original
+			} else {
+				klog.V(4).Infof("createVolumeFromSource: Setting refquota to %d bytes on cloned dataset %s", requiredBytes, datasetPath)
+				updateOpts.RefQuota = &requiredBytes
 			}
 			err = s.driver.client.UpdateDataset(ctx, datasetPath, updateOpts)
 			if err != nil {
-				klog.Errorf("createVolumeFromSource: Failed to set refquota on cloned dataset %s: %v", datasetPath, err)
-				return nil, status.Errorf(codes.Internal, "failed to set quota on cloned volume: %v", err)
+				klog.Errorf("createVolumeFromSource: Failed to set capacity on cloned dataset %s: %v", datasetPath, err)
+				return nil, status.Errorf(codes.Internal, "failed to set capacity on cloned volume: %v", err)
 			}
-			klog.V(4).Infof("createVolumeFromSource: Successfully set refquota on cloned dataset %s", datasetPath)
+			klog.V(4).Infof("createVolumeFromSource: Successfully set capacity on cloned dataset %s", datasetPath)
 		}
 
 		dataset, err := s.driver.client.GetDataset(ctx, datasetPath)
@@ -425,7 +442,7 @@ func (s *ControllerServer) createVolumeFromSource(ctx context.Context, req *csi.
 
 		var volInfo *VolumeInfo
 		if protocol == "iscsi" {
-			volInfo, err = s.createISCSITargetForClone(ctx, volumeID, datasetPath, dataset, parameters)
+			volInfo, err = s.createISCSITargetForClone(ctx, volumeID, datasetPath, requiredBytes, parameters)
 		} else {
 			volInfo, err = s.createNFSShareForClone(ctx, volumeID, datasetPath, dataset, parameters)
 		}
@@ -438,10 +455,16 @@ func (s *ControllerServer) createVolumeFromSource(ctx context.Context, req *csi.
 		volInfo.ContentSource = contentSource
 		s.driver.storeVolumeInfo(volInfo)
 
+		capacityBytes := dataset.RefQuota
+		if protocol == ISCSI {
+			// For ZVOLs, use the volsize we just set
+			capacityBytes = requiredBytes
+		}
+
 		return &csi.CreateVolumeResponse{
 			Volume: &csi.Volume{
 				VolumeId:      volumeID,
-				CapacityBytes: dataset.RefQuota,
+				CapacityBytes: capacityBytes,
 				VolumeContext: parameters,
 				ContentSource: contentSource,
 			},
@@ -490,11 +513,12 @@ func (s *ControllerServer) createNFSShareForClone(ctx context.Context, volumeID,
 	return volInfo, nil
 }
 
-func (s *ControllerServer) createISCSITargetForClone(ctx context.Context, volumeID, datasetPath string, dataset *client.Dataset, parameters map[string]string) (*VolumeInfo, error) {
+func (s *ControllerServer) createISCSITargetForClone(ctx context.Context, volumeID, datasetPath string, capacityBytes int64, parameters map[string]string) (*VolumeInfo, error) {
 	// Get IQN base (can be overridden per StorageClass)
 	iqnBase := s.driver.getISCSIIQNBaseFromParameters(parameters)
 
-	targetSuffix := fmt.Sprintf("csi-%s", volumeID)
+	// Replace slash in volumeID for valid iSCSI target name
+	targetSuffix := fmt.Sprintf("csi-%s", strings.ReplaceAll(volumeID, "/", "-"))
 	target, err := s.driver.client.CreateISCSITarget(ctx, targetSuffix, fmt.Sprintf("CSI volume clone %s", volumeID))
 	if err != nil {
 		return nil, err
@@ -519,7 +543,7 @@ func (s *ControllerServer) createISCSITargetForClone(ctx context.Context, volume
 	volInfo := &VolumeInfo{
 		ID:            volumeID,
 		Name:          volumeID,
-		CapacityBytes: dataset.RefQuota,
+		CapacityBytes: capacityBytes,
 		DatasetPath:   datasetPath,
 		PoolName:      client.ExtractPoolFromPath(datasetPath),
 		Protocol:      "iscsi",

@@ -19,8 +19,8 @@ const (
 	DEFAULT_RECONNECT_INTERVAL  = 5 * time.Second
 	DEFAULT_MAX_RECONNECT_DELAY = 5 * time.Minute
 	DEFAULT_PING_INTERVAL       = 30 * time.Second
-	DEFAULT_PONG_TIMEOUT        = 5 * time.Minute // Increased from 10s to allow long TrueNAS operations
-	HANDSHAKE_TIMEOUT           = 10 * time.Second
+	DEFAULT_PONG_TIMEOUT        = 5 * time.Minute
+	HANDSHAKE_TIMEOUT           = 30 * time.Second
 	EXPONENTIAL_BACKOFF_MULTI   = 2
 	READ_LOOP_SLEEP             = 100 * time.Millisecond
 	WRITE_DEADLINE_ADD          = 10 * time.Second
@@ -30,8 +30,6 @@ const (
 type APIClient struct {
 	url        url.URL
 	apiKey     string
-	username   string
-	password   string
 	conn       *websocket.Conn
 	connMutex  sync.RWMutex
 	requestID  atomic.Uint64
@@ -79,8 +77,6 @@ func (e *RPCError) Error() string {
 type ClientConfig struct {
 	URL                url.URL
 	APIKey             string
-	Username           string
-	Password           string
 	InsecureSkipVerify bool
 	ReconnectInterval  time.Duration
 	MaxReconnectDelay  time.Duration
@@ -91,23 +87,21 @@ type ClientConfig struct {
 // NewClient creates a new TrueNAS WebSocket client
 func NewClient(config *ClientConfig) (*APIClient, error) {
 	if config.ReconnectInterval == 0 {
-		config.ReconnectInterval = 5 * time.Second
+		config.ReconnectInterval = DEFAULT_RECONNECT_INTERVAL
 	}
 	if config.MaxReconnectDelay == 0 {
-		config.MaxReconnectDelay = 5 * time.Minute
+		config.MaxReconnectDelay = DEFAULT_MAX_RECONNECT_DELAY
 	}
 	if config.PingInterval == 0 {
-		config.PingInterval = 30 * time.Second
+		config.PingInterval = DEFAULT_PING_INTERVAL
 	}
 	if config.PongTimeout == 0 {
-		config.PongTimeout = 60 * time.Second
+		config.PongTimeout = DEFAULT_PONG_TIMEOUT
 	}
 
 	client := &APIClient{
 		url:                config.URL,
 		apiKey:             config.APIKey,
-		username:           config.Username,
-		password:           config.Password,
 		pending:            make(map[uint64]chan *Response),
 		reconnectInterval:  config.ReconnectInterval,
 		maxReconnectDelay:  config.MaxReconnectDelay,
@@ -178,23 +172,15 @@ func (c *APIClient) authenticate() error {
 	defer cancel()
 
 	var result bool
-	var err error
+	// Authenticate with API key
+	if c.apiKey == "" {
+		return fmt.Errorf("no API key provided")
+	}
 
-	// Prefer username/password if provided, otherwise use API key
-	if c.username != "" && c.password != "" {
-		klog.V(3).Infof("Authenticating with username: %s", c.username)
-		err = c.Call(ctx, "auth.login", []any{c.username, c.password}, &result)
-		if err != nil {
-			return fmt.Errorf("auth.login failed: %w", err)
-		}
-	} else if c.apiKey != "" {
-		klog.V(3).Info("Authenticating with API key")
-		err = c.Call(ctx, "auth.login_with_api_key", []string{c.apiKey}, &result)
-		if err != nil {
-			return fmt.Errorf("auth.login_with_api_key failed: %w", err)
-		}
-	} else {
-		return fmt.Errorf("no authentication credentials provided (need username/password or API key)")
+	klog.V(3).Info("Authenticating with API key")
+	err := c.Call(ctx, "auth.login_with_api_key", []string{c.apiKey}, &result)
+	if err != nil {
+		return fmt.Errorf("auth.login_with_api_key failed: %w", err)
 	}
 
 	klog.V(3).Infof("Authentication result: %v", result)
@@ -453,7 +439,7 @@ func (c *APIClient) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 // SystemInfo represents TrueNAS system information
 type SystemInfo struct {
 	Version              string    `json:"version"`
-	BuildTime            string    `json:"buildtime"`
+	BuildTime            any       `json:"buildtime"` // date-time object from TrueNAS
 	Hostname             string    `json:"hostname"`
 	PhysMem              int64     `json:"physmem"`
 	Model                string    `json:"model"`
@@ -465,9 +451,9 @@ type SystemInfo struct {
 	SystemSerial         *string   `json:"system_serial"`
 	SystemProduct        *string   `json:"system_product"`
 	SystemProductVersion *string   `json:"system_product_version"`
-	License              any       `json:"license"` // object or null
-	BootTime             string    `json:"boottime"`
-	DateTime             string    `json:"datetime"`
+	License              any       `json:"license"`  // object or null
+	BootTime             any       `json:"boottime"` // date-time object from TrueNAS
+	DateTime             any       `json:"datetime"` // date-time object from TrueNAS
 	Timezone             string    `json:"timezone"`
 	SystemManufacturer   *string   `json:"system_manufacturer"`
 	ECCMemory            bool      `json:"ecc_memory"`

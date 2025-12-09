@@ -30,7 +30,6 @@ go.work.sum
 
 # Claude Files
 .claude/
-CLAUDE.md
 
 # Deploy files
 test-deploy.yaml

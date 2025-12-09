@@ -86,8 +86,6 @@ type DriverConfig struct {
 
 	TrueNASURL      string
 	TrueNASAPIKey   string
-	TrueNASUsername string
-	TrueNASPassword string
 	TrueNASInsecure bool
 
 	DefaultPool  string
@@ -113,9 +111,8 @@ func NewDriver(config *DriverConfig) (*Driver, error) {
 	if config.TrueNASURL == "" {
 		return nil, fmt.Errorf("TrueNAS URL is required")
 	}
-	// Require either API key OR username+password
-	if config.TrueNASAPIKey == "" && (config.TrueNASUsername == "" || config.TrueNASPassword == "") {
-		return nil, fmt.Errorf("TrueNAS authentication required: provide either API key OR username+password")
+	if config.TrueNASAPIKey == "" {
+		return nil, fmt.Errorf("TrueNAS API key is required")
 	}
 	if config.DefaultPool == "" {
 		return nil, fmt.Errorf("default pool is required")
@@ -137,8 +134,6 @@ func NewDriver(config *DriverConfig) (*Driver, error) {
 	clientConfig := &client.ClientConfig{
 		URL:                *tnURL,
 		APIKey:             config.TrueNASAPIKey,
-		Username:           config.TrueNASUsername,
-		Password:           config.TrueNASPassword,
 		InsecureSkipVerify: config.TrueNASInsecure,
 	}
 

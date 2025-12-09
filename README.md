@@ -8,153 +8,276 @@ The `demo-simple.sh` script provides an interactive demonstration of the TrueNAS
 - NFS volume provisioning
 - iSCSI volume provisioning
 - Volume expansion
-- Volume cloning
+- Volume cloning with data verification
 - Volume snapshots
 - Multiple volume creation
+- Storage class variations
 
 This demo runs entirely on a local Kind (Kubernetes in Docker) cluster and provisions real storage on your TrueNAS system.
 
 ## Prerequisites
 
-Before running the demo, ensure you have the following tools installed:
+Before running the demo, ensure you have the following:
 
-### 1. Docker
-- **Purpose**: Required for Kind cluster and building container images
-- **Installation**: https://docs.docker.com/get-docker/
-- **Verify**: `docker --version`
+### 1. Required Tools
 
-### 2. Kind (Kubernetes in Docker)
-- **Purpose**: Creates a local Kubernetes cluster for testing
-- **Installation**: https://kind.sigs.k8s.io/docs/user/quick-start/#installation
-- **Verify**: `kind --version`
+- **Docker**: Required for Kind cluster and building container images
+  - Installation: https://docs.docker.com/get-docker/
+  - Verify: `docker --version`
 
-### 3. kubectl
-- **Purpose**: Kubernetes command-line tool
-- **Installation**: https://kubernetes.io/docs/tasks/tools/
-- **Verify**: `kubectl version --client`
+- **Kind**: Creates a local Kubernetes cluster for testing
+  - Installation: https://kind.sigs.k8s.io/docs/user/quick-start/#installation
+  - Verify: `kind --version`
 
-### 4. TrueNAS System
+- **kubectl**: Kubernetes command-line tool
+  - Installation: https://kubernetes.io/docs/tasks/tools/
+  - Verify: `kubectl version --client`
+
+### 2. TrueNAS System
+
 - **Version**: TrueNAS SCALE (tested with v25.10+)
 - **Requirements**:
   - Network access from your machine to TrueNAS
   - API access enabled
-  - At least one ZFS pool created
+  - At least one ZFS pool created (e.g., "tank")
   - API key or username/password credentials
 
-## Quick Start
+## Configuration
 
-### Option 1: Interactive Setup (Easiest)
+### Step 1: Edit the Deployment YAML
 
-Simply run the script and follow the prompts:
+Before running the demo, configure your TrueNAS connection details:
 
 ```bash
-chmod +x ./demo-simple.sh && ./demo-simple.sh
+# Edit the deployment file
+vim deploy/truenas-csi-driver.yaml
 ```
+
+### Step 2: Configure TrueNAS Connection
+
+Update the **ConfigMap** section with your TrueNAS details:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: truenas-csi-config
+  namespace: truenas-csi
+data:
+  truenasURL: "wss://YOUR_TRUENAS_IP/api/current"    # Use wss:// for secure connection
+  truenasInsecure: "true"                            # Set to "true" for self-signed certs
+  defaultPool: "tank"                                # Change to your pool name
+  nfsServer: "YOUR_TRUENAS_IP"                       # Change to your TrueNAS IP
+  iscsiPortal: "YOUR_TRUENAS_IP:3260"                # Change to your TrueNAS IP
+  iscsiIQNBase: "iqn.2000-01.io.truenas"             # Optional: customize for your org
+```
+
+**Example:**
+```yaml
+data:
+  truenasURL: "wss://10.0.0.136/api/current"          # Secure WebSocket (wss://)
+  truenasInsecure: "true"                             # Allow self-signed certificate
+  defaultPool: "tank"
+  nfsServer: "10.0.0.136"
+  iscsiPortal: "10.0.0.136:3260"
+  iscsiIQNBase: "iqn.2024-01.com.acmecorp"  # Optional: use your company domain
+```
+
+**Note:** TrueNAS requires API keys to be used over secure connections (wss://) for security. Set `truenasInsecure: "true"` if using self-signed certificates.
+
+### Step 3: Configure API Key Authentication
+
+1. **Get your API key** from TrueNAS:
+   - Log into TrueNAS web UI
+   - Click your profile icon → API Keys
+   - Click Add → Create new key
+   - Copy the generated key
+
+2. **Update the Secret** in `deploy/truenas-csi-driver.yaml`:
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: truenas-api-credentials
+  namespace: truenas-csi
+type: Opaque
+stringData:
+  api-key: "1-YOUR_ACTUAL_API_KEY_HERE"
+```
+
+## Running the Demo
+
+Once you've configured the YAML file:
+
+```bash
+chmod +x ./demo-simple.sh
+./demo-simple.sh
+```
+
+### First Run
 
 The script will:
-1. Check for prerequisites
-2. Prompt you for TrueNAS connection details
-3. Create a Kind cluster (if needed)
-4. Build and deploy the CSI driver
-5. Launch an interactive demo menu
+1. ✅ Verify prerequisites are installed
+2. ✅ Confirm you've configured the YAML file
+3. ✅ Create a Kind cluster with 2 worker nodes
+4. ✅ Build the CSI driver Docker image
+5. ✅ Load the image into the cluster
+6. ✅ Deploy the driver using your configuration
+7. ✅ Set up snapshot support
+8. ✅ Create StorageClasses for NFS and iSCSI
+9. ✅ Launch the interactive demo menu
 
-### Option 2: Using Environment Variables (Automated)
+### Subsequent Runs
 
-For a non-interactive experience, set environment variables before running:
+If the cluster and driver already exist, the script will:
+- Skip cluster creation
+- Skip driver deployment
+- Go directly to the demo menu
 
-#### With API Key (Recommended):
-```bash
-export TRUENAS_IP="10.0.0.136"
-export TRUENAS_API_KEY="1-abc123xyz..."
-export TRUENAS_POOL="tank"            # Optional, defaults to "tank"
-export TRUENAS_USE_WSS="n"            # Optional, "y" for wss://, "n" for ws://
+## Demo Menu Options
 
-./demo-simple.sh
+The interactive menu provides these demos:
+
+### Volume Provisioning
+1. **Demo NFS volume creation** - Create a ReadWriteMany NFS volume
+2. **Demo iSCSI volume creation** - Create a ReadWriteOnce iSCSI block volume
+3. **Demo multiple volumes** - Create 3 volumes simultaneously
+4. **Demo storage class variations** - Different compression settings
+
+### Advanced Operations
+5. **Demo volume expansion** - Expand an existing volume online
+6. **Demo volume cloning** - Clone a volume (select existing or create new)
+7. **Demo volume snapshots** - Create and restore from snapshots
+8. **Demo clone with data verification** ⭐ - Write data, clone, verify data copied
+
+### Inspection & Metadata
+9. **Demo volume metadata inspection** - View volume attributes
+10. **Demo capacity reporting** - Check volume sizes
+11. **Demo topology awareness** - View node topology
+12. **Demo driver capabilities** - List all CSI features
+
+### Utilities
+13. **Show current status** - View all pods, PVCs, PVs
+14. **View driver logs** - Check controller and node logs
+15. **Cleanup demo resources** - Delete all demo volumes
+
+## What to Expect
+
+### Successful Volume Creation
+
+When you create a volume, you should see:
+- ✅ PVC bound within 10-30 seconds
+- ✅ New dataset appears in TrueNAS UI (Storage → Datasets)
+- ✅ New share appears in TrueNAS UI (Shares → NFS or iSCSI)
+
+### Check TrueNAS UI
+
+After creating volumes, verify in TrueNAS:
+- **Storage → Datasets** - See the new datasets (pvc-xxxxx)
+- **Shares → NFS** - See NFS shares for NFS volumes
+- **Shares → iSCSI** - See targets/extents for iSCSI volumes
+
+## Advanced Configuration
+
+### Custom IQN Prefix (Multi-Tenant)
+
+For enterprise/multi-tenant deployments, customize IQN prefixes per StorageClass:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: finance-iscsi
+parameters:
+  protocol: "iscsi"
+  iscsi.iqn-base: "iqn.2024-01.com.acme.finance"
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: engineering-iscsi
+parameters:
+  protocol: "iscsi"
+  iscsi.iqn-base: "iqn.2024-01.com.acme.engineering"
 ```
 
-#### With Username/Password:
-```bash
-export TRUENAS_IP="10.0.0.136"
-export TRUENAS_USERNAME="admin"
-export TRUENAS_PASSWORD="your-password"
-export TRUENAS_POOL="tank"            # Optional
+### Self-Signed Certificates
 
-./demo-simple.sh
+The driver uses secure WebSocket (wss://) by default. For self-signed certificates:
+
+```yaml
+data:
+  truenasURL: "wss://10.0.0.136/api/current"
+  truenasInsecure: "true"  # Skip certificate validation for self-signed certs
 ```
 
-## Getting Your TrueNAS API Key
-
-1. Log into your TrueNAS web interface
-2. Click your profile icon (top right)
-3. Select **API Keys**
-4. Click **Add** to create a new API key
-5. Give it a name (e.g., "CSI Driver Demo")
-6. Copy the generated key
-7. Store it securely
-
-## What the Demo Does
-
-### Automatic Setup (First Run)
-
-If no cluster exists, the script will automatically:
-1.  Create a Kind cluster with 2 worker nodes
-2.  Build the CSI driver Docker image
-3.  Load the image into the Kind cluster
-4.  Deploy the CSI driver with your TrueNAS credentials
-5.  Create StorageClasses for NFS and iSCSI
-
-## Important Notes
-
-### Network Connectivity
-- Your machine must be able to reach TrueNAS over the network
-- The Kind cluster runs on Docker network `172.18.0.0/16` by default
-- TrueNAS must be accessible from both your host and the Docker network
-
-### Authentication Priority
-The CSI driver supports both authentication methods:
-- Tries **username/password** first (if provided)
-- Falls back to **API key** (if username/password not available)
-- At least one method must be configured
+**For production with valid certificates**, set to `"false"` or remove the field:
+```yaml
+data:
+  truenasURL: "wss://truenas.example.com/api/current"
+  truenasInsecure: "false"  # Validate certificate
+```
 
 ## Troubleshooting
 
-### "kind not found"
-Install Kind: https://kind.sigs.k8s.io/docs/user/quick-start/#installation
+### "Have you configured deploy/truenas-csi-driver.yaml?"
 
-### "kubectl not found"
-Install kubectl: https://kubernetes.io/docs/tasks/tools/
+The demo requires you to edit the YAML file first. If you see this message:
+1. Edit `deploy/truenas-csi-driver.yaml`
+2. Update ConfigMap with your TrueNAS IP and pool
+3. Update Secret with your credentials
+4. Run the demo again
 
-### "docker not found"
-Install Docker: https://docs.docker.com/get-docker/
+### "Failed to create driver: invalid iSCSI IQN base format"
 
-### "Failed to authenticate"
-- Ensure your TrueNAS IP is reachable: `ping YOUR_TRUENAS_IP`
-- Check if you can access the web UI at `http://YOUR_TRUENAS_IP`
-- Verify the API key hasn't been revoked
+Your `iscsiIQNBase` in the ConfigMap has an invalid format. It must:
+- Start with `iqn.`
+- Include date in `YYYY-MM` format
+- Include reversed domain name
+- Example: `iqn.2024-01.com.example` ✅
+- Example: `iqn.invalid` ❌
 
 ### "Pool 'tank' not found"
-- Verify the pool exists in TrueNAS → Storage → Pools
-- Use the correct pool name when prompted (case-sensitive)
-- Set `TRUENAS_POOL` environment variable to your actual pool name
+
+- Verify the pool exists in TrueNAS UI (Storage → Pools)
+- Update `defaultPool` in the ConfigMap to match your actual pool name
+- Pool names are case-sensitive
 
 ### "PVC stuck in Pending"
-- Check driver logs: Choose option **10** from the menu
-- Look for connection errors or authentication failures
-- Verify TrueNAS is accessible from the Kind cluster
 
-### Viewing Detailed Logs
+Check driver logs from the menu (Option 14) or:
 ```bash
-# Controller logs (volume creation)
 kubectl logs -n truenas-csi -l app=truenas-csi-controller -c csi-controller
-
-# Node logs (volume mounting)
-kubectl logs -n truenas-csi -l app=truenas-csi-node -c csi-node
 ```
+
+Common causes:
+- TrueNAS not accessible from Kind cluster
+- Authentication failure
+- Pool doesn't exist
+- Network connectivity issues
+
+### "Failed to connect to TrueNAS"
+
+- Verify TrueNAS is reachable: `ping YOUR_TRUENAS_IP`
+- Check if web UI is accessible: `http://YOUR_TRUENAS_IP`
+- Ensure WebSocket API is enabled
+- Check firewall rules
+
+### Pod Mounting Issues (NFS)
+
+NFS mounting in Kind clusters can be problematic due to:
+- Kind nodes are containers with limited NFS client support
+- Network isolation between Docker and host
+
+**Workarounds:**
+- Use the basic volume provisioning demos (options 1-7)
+- Skip the data verification demo (option 8) in Kind
+- Test mounting on real Kubernetes clusters
 
 ## Cleanup
 
 ### Clean Demo Resources Only
-From the menu, choose **Option 11** to delete all demo PVCs while keeping the driver and cluster.
+From the menu, choose **Option 15** to delete all demo PVCs while keeping the driver and cluster.
 
 ### Clean Everything
 ```bash
@@ -162,45 +285,58 @@ From the menu, choose **Option 11** to delete all demo PVCs while keeping the dr
 kind delete cluster --name truenas-csi-demo
 ```
 
-This removes the cluster and all associated resources. Your TrueNAS datasets/shares will be deleted automatically thanks to the `reclaimPolicy: Delete` setting.
+This removes the cluster and all associated resources. TrueNAS datasets/shares will be deleted automatically (due to `reclaimPolicy: Delete`).
 
-## Advanced Usage
+## Production Deployment
 
-### Custom Cluster Name
-```bash
-export KIND_CLUSTER_NAME="my-custom-cluster"
-./demo-simple.sh
+For production use on a real Kubernetes cluster:
+
+1. **Edit the deployment YAML** with your production settings
+2. **Update image tag** from `demo` to `latest` or a specific version
+3. **Change imagePullPolicy** from `IfNotPresent` to `Always`
+4. **Configure proper IQN prefix** for your organization
+5. **Use TLS** (wss://) for TrueNAS connection
+6. **Deploy**:
+   ```bash
+   kubectl apply -f deploy/truenas-csi-driver.yaml
+   ```
+
+## Getting Help
+
+- **View available options**: Run the demo and explore the menu
+- **Check logs**: Use menu option 14
+- **Report issues**: https://github.com/iXsystems/truenas_k8_driver/issues
+
+## Network Architecture
+
 ```
-
-### Skip Confirmation Prompts
-Set all required environment variables to avoid interactive prompts:
-```bash
-export TRUENAS_IP="10.0.0.136"
-export TRUENAS_API_KEY="1-abc123..."
-export TRUENAS_POOL="tank"
-export TRUENAS_USE_WSS="n"
-
-# Note: You'll still need to confirm the configuration summary
-# and interact with the demo menu
-./demo-simple.sh
+┌─────────────────────────────────────────────────────────┐
+│ Kind Cluster (Docker Network: 172.18.0.0/16)           │
+│                                                         │
+│  ┌──────────────┐     ┌─────────────┐                 │
+│  │ CSI Driver   │────▶│  TrueNAS    │                 │
+│  │ Controller   │     │  WebSocket  │                 │
+│  └──────────────┘     │  API        │                 │
+│                       └─────────────┘                 │
+│  ┌──────────────┐           │                         │
+│  │ CSI Node     │           │                         │
+│  │ (Worker 1)   │───────────┘                         │
+│  └──────────────┘       (mounts NFS/iSCSI)            │
+│                                                         │
+│  ┌──────────────┐                                      │
+│  │ CSI Node     │                                      │
+│  │ (Worker 2)   │                                      │
+│  └──────────────┘                                      │
+└─────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+        ┌───────────────────────┐
+        │  TrueNAS Server       │
+        │  10.0.0.136           │
+        │                       │
+        │  Pool: tank           │
+        │  - Datasets (ZFS)     │
+        │  - NFS Shares         │
+        │  - iSCSI Targets      │
+        └───────────────────────┘
 ```
-
-### Using Secure WebSocket (TLS)
-```bash
-export TRUENAS_USE_WSS="y"  # Uses wss:// instead of ws://
-./demo-simple.sh
-```
-
-## Environment Variable Reference
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `TRUENAS_IP` | Yes* | - | TrueNAS IP address or hostname |
-| `TRUENAS_API_KEY` | Yes* | - | TrueNAS API key (option 1) |
-| `TRUENAS_USERNAME` | Yes* | - | TrueNAS username (option 2) |
-| `TRUENAS_PASSWORD` | Yes* | - | TrueNAS password (option 2) |
-| `TRUENAS_POOL` | No | `tank` | ZFS pool name for volume provisioning |
-| `TRUENAS_USE_WSS` | No | `n` | Use wss:// (y) or ws:// (n) |
-
-\* Either API key OR username and password is required
-
