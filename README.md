@@ -8,7 +8,7 @@ The `demo-simple.sh` script provides an interactive demonstration of the TrueNAS
 - NFS volume provisioning
 - iSCSI volume provisioning
 - Volume expansion
-- Volume cloning with data verification
+- Volume cloning
 - Volume snapshots
 - Multiple volume creation
 - Storage class variations
@@ -50,7 +50,7 @@ Before running the demo, configure your TrueNAS connection details:
 
 ```bash
 # Edit the deployment file
-vim deploy/truenas-csi-driver.yaml
+deploy/truenas-csi-driver.yaml
 ```
 
 ### Step 2: Configure TrueNAS Connection
@@ -307,36 +307,3 @@ For production use on a real Kubernetes cluster:
 - **Check logs**: Use menu option 14
 - **Report issues**: https://github.com/iXsystems/truenas_k8_driver/issues
 
-## Network Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│ Kind Cluster (Docker Network: 172.18.0.0/16)           │
-│                                                         │
-│  ┌──────────────┐     ┌─────────────┐                 │
-│  │ CSI Driver   │────▶│  TrueNAS    │                 │
-│  │ Controller   │     │  WebSocket  │                 │
-│  └──────────────┘     │  API        │                 │
-│                       └─────────────┘                 │
-│  ┌──────────────┐           │                         │
-│  │ CSI Node     │           │                         │
-│  │ (Worker 1)   │───────────┘                         │
-│  └──────────────┘       (mounts NFS/iSCSI)            │
-│                                                         │
-│  ┌──────────────┐                                      │
-│  │ CSI Node     │                                      │
-│  │ (Worker 2)   │                                      │
-│  └──────────────┘                                      │
-└─────────────────────────────────────────────────────────┘
-                    │
-                    ▼
-        ┌───────────────────────┐
-        │  TrueNAS Server       │
-        │  10.0.0.136           │
-        │                       │
-        │  Pool: tank           │
-        │  - Datasets (ZFS)     │
-        │  - NFS Shares         │
-        │  - iSCSI Targets      │
-        └───────────────────────┘
-```
