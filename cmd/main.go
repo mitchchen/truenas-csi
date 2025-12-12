@@ -13,28 +13,24 @@ import (
 )
 
 var (
-	// CSI protocol flags only
-	endpoint      = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
-	nodeID        = flag.String("node-id", "", "Node ID")
-	driverName    = flag.String("driver-name", driver.DRIVER_NAME, "Name of the driver")
-	driverVersion = flag.String("driver-version", driver.DRIVER_VERSION, "Version of the driver")
+	// CSI protocol flags
+	endpoint = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
+	nodeID   = flag.String("node-id", "", "Node ID")
 )
 
 func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
 
-	klog.Infof("Starting TrueNAS CSI Driver version %s", *driverVersion)
+	klog.Infof("Starting TrueNAS CSI Driver version %s", driver.DRIVER_VERSION)
 
 	if err := validateFlags(); err != nil {
 		klog.Fatalf("Invalid configuration: %v", err)
 	}
 
 	config := &driver.DriverConfig{
-		DriverName:    *driverName,
-		DriverVersion: *driverVersion,
-		NodeID:        *nodeID,
-		Endpoint:      *endpoint,
+		NodeID:   *nodeID,
+		Endpoint: *endpoint,
 	}
 
 	if err := loadEnvConfig(config); err != nil {

@@ -95,12 +95,9 @@ type DriverConfig struct {
 }
 
 func NewDriver(config *DriverConfig) (*Driver, error) {
-	if config.DriverName == "" {
-		config.DriverName = DRIVER_NAME
-	}
-	if config.DriverVersion == "" {
-		config.DriverVersion = DRIVER_VERSION
-	}
+	config.DriverName = DRIVER_NAME
+
+	config.DriverVersion = DRIVER_VERSION
 
 	if config.NodeID == "" {
 		return nil, fmt.Errorf("node ID is required")
