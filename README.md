@@ -234,8 +234,8 @@ Your `iscsiIQNBase` in the ConfigMap has an invalid format. It must:
 - Start with `iqn.`
 - Include date in `YYYY-MM` format
 - Include reversed domain name
-- Example: `iqn.2024-01.com.example` ✅
-- Example: `iqn.invalid` ❌
+- Example: `iqn.2024-01.com.example` 
+- Example: `iqn.invalid` 
 
 ### "Pool 'tank' not found"
 
@@ -255,24 +255,6 @@ Common causes:
 - Authentication failure
 - Pool doesn't exist
 - Network connectivity issues
-
-### "Failed to connect to TrueNAS"
-
-- Verify TrueNAS is reachable: `ping YOUR_TRUENAS_IP`
-- Check if web UI is accessible: `http://YOUR_TRUENAS_IP`
-- Ensure WebSocket API is enabled
-- Check firewall rules
-
-### Pod Mounting Issues (NFS)
-
-NFS mounting in Kind clusters can be problematic due to:
-- Kind nodes are containers with limited NFS client support
-- Network isolation between Docker and host
-
-**Workarounds:**
-- Use the basic volume provisioning demos (options 1-7)
-- Skip the data verification demo (option 8) in Kind
-- Test mounting on real Kubernetes clusters
 
 ## Cleanup
 
@@ -302,8 +284,5 @@ For production use on a real Kubernetes cluster:
    ```
 
 ## Getting Help
-
-- **View available options**: Run the demo and explore the menu
-- **Check logs**: Use menu option 14
 - **Report issues**: https://github.com/iXsystems/truenas_k8_driver/issues
 
