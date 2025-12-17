@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -44,6 +45,10 @@ const (
 	POOL_EXPORT string = "pool.export"
 )
 
+const (
+	ZFS_RESOURCE_QUERY string = "zfs.resource.query"
+)
+
 type Dataset struct {
 	ID              string         `json:"id"`
 	Name            string         `json:"name"`
@@ -82,25 +87,25 @@ type DatasetCreateOptions struct {
 }
 
 type DatasetUpdateOptions struct {
-	Comments          string `json:"comments,omitempty"`
-	Sync              string `json:"sync,omitempty"`
-	Compression       string `json:"compression,omitempty"`
-	Exec              string `json:"exec,omitempty"`
-	Quota             *int64 `json:"quota,omitempty"`
-	RefQuota          *int64 `json:"refquota,omitempty"`
-	Reservation       *int64 `json:"reservation,omitempty"`
-	RefReservation    *int64 `json:"refreservation,omitempty"`
-	Checksum          string `json:"checksum,omitempty"`
-	Deduplication     string `json:"deduplication,omitempty"`
-	Readonly          string `json:"readonly,omitempty"`
-	Atime             string `json:"atime,omitempty"`
-	RecordSize        string `json:"recordsize,omitempty"`
-	Volsize           *int64 `json:"volsize,omitempty"`
-	QuotaWarning      *int64 `json:"quota_warning,omitempty"`
-	QuotaCritical     *int64 `json:"quota_critical,omitempty"`
-	RefQuotaWarning   *int64 `json:"refquota_warning,omitempty"`
-	RefQuotaCritical  *int64 `json:"refquota_critical,omitempty"`
-	UserProperties    []map[string]string `json:"user_properties,omitempty"`
+	Comments         string              `json:"comments,omitempty"`
+	Sync             string              `json:"sync,omitempty"`
+	Compression      string              `json:"compression,omitempty"`
+	Exec             string              `json:"exec,omitempty"`
+	Quota            *int64              `json:"quota,omitempty"`
+	RefQuota         *int64              `json:"refquota,omitempty"`
+	Reservation      *int64              `json:"reservation,omitempty"`
+	RefReservation   *int64              `json:"refreservation,omitempty"`
+	Checksum         string              `json:"checksum,omitempty"`
+	Deduplication    string              `json:"deduplication,omitempty"`
+	Readonly         string              `json:"readonly,omitempty"`
+	Atime            string              `json:"atime,omitempty"`
+	RecordSize       string              `json:"recordsize,omitempty"`
+	Volsize          *int64              `json:"volsize,omitempty"`
+	QuotaWarning     *int64              `json:"quota_warning,omitempty"`
+	QuotaCritical    *int64              `json:"quota_critical,omitempty"`
+	RefQuotaWarning  *int64              `json:"refquota_warning,omitempty"`
+	RefQuotaCritical *int64              `json:"refquota_critical,omitempty"`
+	UserProperties   []map[string]string `json:"user_properties,omitempty"`
 }
 
 // QueryOptions represents standard TrueNAS query options used by all .query and .get_instance methods
@@ -286,6 +291,33 @@ type Pool struct {
 	Free      int64  `json:"free"`
 	Path      string `json:"path"`
 	Autotrim  any    `json:"autotrim"` // Can be bool or object in TrueNAS
+}
+
+type ZFSResourceQueryOptions struct {
+	Paths             []string `json:"paths"`
+	Properties        []string `json:"properties,omitempty"`
+	GetUserProperties bool     `json:"get_user_properties,omitempty"`
+	GetSource         bool     `json:"get_source,omitempty"`
+	NestResults       bool     `json:"nest_results,omitempty"`
+	GetChildren       bool     `json:"get_children,omitempty"`
+}
+
+type ZFSResource struct {
+	Name       string                 `json:"name"`
+	Pool       string                 `json:"pool"`
+	Type       string                 `json:"type"`
+	Properties map[string]ZFSProperty `json:"properties"`
+}
+
+type ZFSProperty struct {
+	Raw    string         `json:"raw"`
+	Value  any            `json:"value"` // Can be int64, float64, string, bool, or null
+	Source *ZFSPropSource `json:"source"`
+}
+
+type ZFSPropSource struct {
+	Type  string `json:"type"`
+	Value any    `json:"value"`
 }
 
 func (c *APIClient) CreateDataset(ctx context.Context, options *DatasetCreateOptions) (*Dataset, error) {
@@ -579,11 +611,44 @@ func (c *APIClient) ListPools(ctx context.Context) ([]Pool, error) {
 }
 
 func (c *APIClient) GetAvailableSpace(ctx context.Context, poolName string) (int64, error) {
-	pool, err := c.GetPool(ctx, poolName)
-	if err != nil {
-		return 0, err
+	options := &ZFSResourceQueryOptions{
+		Paths:      []string{poolName},
+		Properties: []string{"available"},
+		GetSource:  false,
 	}
-	return pool.Free, nil
+
+	var resources []ZFSResource
+	err := c.Call(ctx, ZFS_RESOURCE_QUERY, []any{options}, &resources)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query ZFS resource %s: %w", poolName, err)
+	}
+
+	if len(resources) == 0 {
+		return 0, fmt.Errorf("ZFS resource '%s' not found", poolName)
+	}
+
+	resource := resources[0]
+	availableProp, ok := resource.Properties["available"]
+	if !ok {
+		return 0, fmt.Errorf("'available' property not found for ZFS resource %s", poolName)
+	}
+
+	switch v := availableProp.Value.(type) {
+	case float64:
+		return int64(v), nil
+	case int64:
+		return v, nil
+	case string:
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("unexpected string value %v for 'available' property of ZFS resource %s", v, poolName)
+		}
+		return n, nil
+	case nil:
+		return 0, fmt.Errorf("'available' property is null for ZFS resource %s", poolName)
+	default:
+		return 0, fmt.Errorf("unexpected type %T for 'available' property of ZFS resource %s", v, poolName)
+	}
 }
 
 func ExtractPoolFromPath(path string) string {
