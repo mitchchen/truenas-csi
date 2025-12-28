@@ -3,8 +3,8 @@ module github.com/iXsystems/truenas_k8_driver
 go 1.24.5
 
 require (
+	github.com/coder/websocket v1.8.12
 	github.com/container-storage-interface/spec v1.12.0
-	github.com/gorilla/websocket v1.5.3
 	google.golang.org/grpc v1.76.0
 	google.golang.org/protobuf v1.36.6
 	k8s.io/klog/v2 v2.130.1

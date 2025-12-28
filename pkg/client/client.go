@@ -4,62 +4,73 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"math/rand"
-	"net/url"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"k8s.io/klog/v2"
 )
 
+// Default configuration values
 const (
-	DEFAULT_RECONNECT_INTERVAL  = 5 * time.Second
-	DEFAULT_MAX_RECONNECT_DELAY = 5 * time.Minute
-	DEFAULT_PING_INTERVAL       = 30 * time.Second
-	DEFAULT_PONG_TIMEOUT        = 5 * time.Minute
-	HANDSHAKE_TIMEOUT           = 30 * time.Second
-	EXPONENTIAL_BACKOFF_MULTI   = 2
-	READ_LOOP_SLEEP             = 100 * time.Millisecond
-	WRITE_DEADLINE_ADD          = 10 * time.Second
-	JSONRPC_VERSION             = "2.0"
+	defaultCallTimeout     = 30 * time.Second
+	defaultPingInterval    = 30 * time.Second
+	defaultPingTimeout     = 10 * time.Second
+	defaultDialTimeout     = 30 * time.Second
+	defaultReconnectMin    = 1 * time.Second
+	defaultReconnectMax    = 60 * time.Second
+	defaultReconnectFactor = 2.0
+	jsonRPCVersion         = "2.0"
 )
 
-type APIClient struct {
-	url        url.URL
-	apiKey     string
-	conn       *websocket.Conn
-	connMutex  sync.RWMutex
-	requestID  atomic.Uint64
-	pending    map[uint64]chan *Response
-	pendingMux sync.RWMutex
+// Sentinel errors
+var (
+	ErrNotConnected = errors.New("truenas: not connected")
+	ErrAuthFailed   = errors.New("truenas: authentication failed")
+	ErrClosed       = errors.New("truenas: client closed")
+)
 
-	reconnectInterval  time.Duration
-	maxReconnectDelay  time.Duration
-	pingInterval       time.Duration
-	pongTimeout        time.Duration
-	insecureSkipVerify bool
-
-	done chan struct{}
-	wg   sync.WaitGroup
+// Config holds configuration for the TrueNAS client.
+type Config struct {
+	URL                string
+	APIKey             string
+	TLSConfig          *tls.Config
+	InsecureSkipVerify bool
+	CallTimeout        time.Duration
+	PingInterval       time.Duration
+	ReconnectMin       time.Duration
+	ReconnectMax       time.Duration
+	ReconnectFactor    float64
+	// MaxReconnectAttempts limits reconnection attempts. 0 means unlimited.
+	MaxReconnectAttempts int
 }
 
-type Request struct {
-	ID      uint64 `json:"id"`
-	Method  string `json:"method"`
-	Params  any    `json:"params,omitempty"`
-	JSONRPC string `json:"jsonrpc"`
+// ConnectionError wraps connection-related errors.
+type ConnectionError struct {
+	Op  string // "dial", "read", "write"
+	Err error
 }
 
-type Response struct {
-	ID      uint64          `json:"id"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *RPCError       `json:"error,omitempty"`
-	JSONRPC string          `json:"jsonrpc"`
+func (e *ConnectionError) Error() string {
+	return fmt.Sprintf("truenas: %s: %v", e.Op, e.Err)
 }
 
+func (e *ConnectionError) Unwrap() error {
+	return e.Err
+}
+
+// IsConnectionError reports whether err is a connection-related error.
+func IsConnectionError(err error) bool {
+	var connErr *ConnectionError
+	return errors.As(err, &connErr)
+}
+
+// RPCError represents a JSON-RPC error from TrueNAS.
 type RPCError struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
@@ -67,394 +78,394 @@ type RPCError struct {
 }
 
 func (e *RPCError) Error() string {
-	if e.Data != nil {
-		return fmt.Sprintf("RPC error %d: %s (data: %s)", e.Code, e.Message, string(e.Data))
+	if len(e.Data) > 0 {
+		return fmt.Sprintf("truenas: rpc error %d: %s (data: %s)", e.Code, e.Message, e.Data)
 	}
-	return fmt.Sprintf("RPC error %d: %s", e.Code, e.Message)
+	return fmt.Sprintf("truenas: rpc error %d: %s", e.Code, e.Message)
 }
 
-// ClientConfig holds configuration for the TrueNAS client
-type ClientConfig struct {
-	URL                url.URL
-	APIKey             string
-	InsecureSkipVerify bool
-	ReconnectInterval  time.Duration
-	MaxReconnectDelay  time.Duration
-	PingInterval       time.Duration
-	PongTimeout        time.Duration
+// request represents a JSON-RPC request.
+type request struct {
+	ID      uint64 `json:"id"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+	JSONRPC string `json:"jsonrpc"`
 }
 
-// NewClient creates a new TrueNAS WebSocket client
-func NewClient(config *ClientConfig) (*APIClient, error) {
-	if config.ReconnectInterval == 0 {
-		config.ReconnectInterval = DEFAULT_RECONNECT_INTERVAL
-	}
-	if config.MaxReconnectDelay == 0 {
-		config.MaxReconnectDelay = DEFAULT_MAX_RECONNECT_DELAY
-	}
-	if config.PingInterval == 0 {
-		config.PingInterval = DEFAULT_PING_INTERVAL
-	}
-	if config.PongTimeout == 0 {
-		config.PongTimeout = DEFAULT_PONG_TIMEOUT
-	}
-
-	client := &APIClient{
-		url:                config.URL,
-		apiKey:             config.APIKey,
-		pending:            make(map[uint64]chan *Response),
-		reconnectInterval:  config.ReconnectInterval,
-		maxReconnectDelay:  config.MaxReconnectDelay,
-		pingInterval:       config.PingInterval,
-		pongTimeout:        config.PongTimeout,
-		insecureSkipVerify: config.InsecureSkipVerify,
-		done:               make(chan struct{}),
-	}
-
-	if err := client.connectWebSocket(config.InsecureSkipVerify); err != nil {
-		close(client.done)
-		return nil, fmt.Errorf("failed to connect: %w", err)
-	}
-
-	ctx := context.Background()
-	client.wg.Add(2)
-	go client.readLoop(ctx)
-	go client.pingLoop(ctx)
-
-	// Add random delay (0-3 seconds) to prevent multiple pods from authenticating simultaneously
-	delay := time.Duration(rand.Intn(3000)) * time.Millisecond
-	klog.V(3).Infof("Waiting %v before authentication to avoid rate limiting", delay)
-	time.Sleep(delay)
-
-	if err := client.authenticate(); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("failed to authenticate: %w", err)
-	}
-
-	klog.V(2).Infof("Successfully authenticated with TrueNAS")
-
-	return client, nil
+// response represents a JSON-RPC response.
+type response struct {
+	ID      uint64          `json:"id"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *RPCError       `json:"error,omitempty"`
+	JSONRPC string          `json:"jsonrpc"`
 }
 
-// connectWebSocket establishes a WebSocket connection to TrueNAS (without authentication)
-func (c *APIClient) connectWebSocket(insecureSkipVerify bool) error {
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: insecureSkipVerify,
-		},
+// Client is a TrueNAS WebSocket API client with automatic reconnection.
+type Client struct {
+	config Config
+
+	// Connection state (protected by connMu)
+	connMu   sync.RWMutex
+	conn     *websocket.Conn
+	connDone chan struct{} // closed when current connection should stop
+
+	// Request tracking
+	nextID  atomic.Uint64
+	pending sync.Map // map[uint64]chan response
+
+	// Client lifecycle
+	done   chan struct{} // closed on Close()
+	closed atomic.Bool
+
+	// Reconnection guard
+	reconnecting atomic.Bool
+}
+
+// New creates a new TrueNAS client with the given configuration.
+func New(cfg Config) *Client {
+	// Apply defaults for zero values
+	if cfg.CallTimeout == 0 {
+		cfg.CallTimeout = defaultCallTimeout
+	}
+	if cfg.PingInterval == 0 {
+		cfg.PingInterval = defaultPingInterval
+	}
+	if cfg.ReconnectMin == 0 {
+		cfg.ReconnectMin = defaultReconnectMin
+	}
+	if cfg.ReconnectMax == 0 {
+		cfg.ReconnectMax = defaultReconnectMax
+	}
+	if cfg.ReconnectFactor == 0 {
+		cfg.ReconnectFactor = defaultReconnectFactor
+	}
+	if cfg.TLSConfig == nil && cfg.InsecureSkipVerify {
+		cfg.TLSConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 
-	conn, _, err := dialer.Dial(c.url.String(), nil)
-	if err != nil {
-		return fmt.Errorf("websocket dial failed: %w", err)
+	return &Client{
+		config: cfg,
+		done:   make(chan struct{}),
 	}
+}
 
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(c.pongTimeout))
+// Connect establishes the initial connection to TrueNAS.
+// It is safe to call multiple times; subsequent calls return nil if already connected.
+func (c *Client) Connect(ctx context.Context) error {
+	if c.Connected() {
 		return nil
+	}
+	return c.dial(ctx)
+}
+
+func (c *Client) dial(ctx context.Context) error {
+	if c.closed.Load() {
+		return ErrClosed
+	}
+
+	// Add timeout if context has no deadline
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultDialTimeout)
+		defer cancel()
+	}
+
+	klog.Infof("Connecting to TrueNAS at %s (timeout: %v)", c.config.URL, defaultDialTimeout)
+
+	conn, _, err := websocket.Dial(ctx, c.config.URL, &websocket.DialOptions{
+		HTTPClient: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig:   c.config.TLSConfig,
+				TLSHandshakeTimeout: 10 * time.Second,
+			},
+		},
 	})
-
-	conn.SetReadDeadline(time.Now().Add(c.pongTimeout))
-
-	c.connMutex.Lock()
-	c.conn = conn
-	c.connMutex.Unlock()
-
-	klog.V(2).Infof("Connected to TrueNAS WebSocket API at %s", c.url.String())
-	return nil
-}
-
-// authenticate performs authentication after connection
-func (c *APIClient) authenticate() error {
-	// Create a context with timeout for authentication
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	var result bool
-	// Authenticate with API key
-	if c.apiKey == "" {
-		return fmt.Errorf("no API key provided")
-	}
-
-	klog.V(3).Info("Authenticating with API key")
-	err := c.Call(ctx, "auth.login_with_api_key", []string{c.apiKey}, &result)
 	if err != nil {
-		return fmt.Errorf("auth.login_with_api_key failed: %w", err)
+		klog.Errorf("Failed to connect to TrueNAS: %v", err)
+		return &ConnectionError{Op: "dial", Err: err}
 	}
 
-	klog.V(3).Infof("Authentication result: %v", result)
-	if !result {
-		return fmt.Errorf("authentication failed: credentials were rejected by TrueNAS")
+	klog.Info("WebSocket connected, authenticating...")
+
+	// Authenticate before storing connection (direct read/write, no readLoop yet)
+	authCtx, authCancel := context.WithTimeout(ctx, c.config.CallTimeout)
+	defer authCancel()
+
+	authReq := request{
+		ID:      c.nextID.Add(1),
+		Method:  "auth.login_with_api_key",
+		Params:  []string{c.config.APIKey},
+		JSONRPC: jsonRPCVersion,
 	}
 
+	if err = wsjson.Write(authCtx, conn, authReq); err != nil {
+		conn.Close(websocket.StatusNormalClosure, "")
+		klog.Errorf("TrueNAS auth write error: %v", err)
+		return &ConnectionError{Op: "write", Err: err}
+	}
+
+	var authResp response
+	if err = wsjson.Read(authCtx, conn, &authResp); err != nil {
+		conn.Close(websocket.StatusNormalClosure, "")
+		klog.Errorf("TrueNAS auth read error: %v", err)
+		return &ConnectionError{Op: "read", Err: err}
+	}
+
+	if authResp.Error != nil {
+		conn.Close(websocket.StatusNormalClosure, "")
+		klog.Errorf("TrueNAS authentication error: %v", authResp.Error)
+		return authResp.Error
+	}
+
+	var ok bool
+	if err = json.Unmarshal(authResp.Result, &ok); err != nil || !ok {
+		conn.Close(websocket.StatusNormalClosure, "")
+		klog.Error("TrueNAS authentication rejected")
+		return ErrAuthFailed
+	}
+
+	connDone := make(chan struct{})
+
+	c.connMu.Lock()
+	c.conn = conn
+	c.connDone = connDone
+	c.connMu.Unlock()
+
+	go c.readLoop(conn, connDone)
+	go c.pingLoop(conn, connDone)
+
+	klog.Info("Connected to TrueNAS")
 	return nil
 }
 
-// reconnect handles reconnection logic with exponential backoff
-func (c *APIClient) reconnect(ctx context.Context) {
-	delay := c.reconnectInterval
-
+func (c *Client) readLoop(conn *websocket.Conn, done chan struct{}) {
 	for {
 		select {
-		case <-ctx.Done():
-			return
-		case <-c.done:
-			return
-		case <-time.After(delay):
-			klog.V(2).Info("Attempting to reconnect to TrueNAS...")
-
-			dialer := websocket.Dialer{
-				HandshakeTimeout: 10 * time.Second,
-				TLSClientConfig: &tls.Config{
-					InsecureSkipVerify: c.insecureSkipVerify,
-				},
-			}
-
-			conn, _, err := dialer.Dial(c.url.String(), nil)
-			if err != nil {
-				klog.Errorf("Reconnection failed: %v", err)
-
-				// Exponential backoff
-				delay *= 2
-				if delay > c.maxReconnectDelay {
-					delay = c.maxReconnectDelay
-				}
-				continue
-			}
-
-			conn.SetPongHandler(func(string) error {
-				conn.SetReadDeadline(time.Now().Add(c.pongTimeout))
-				return nil
-			})
-
-			conn.SetReadDeadline(time.Now().Add(c.pongTimeout))
-
-			c.connMutex.Lock()
-			c.conn = conn
-			c.connMutex.Unlock()
-
-			klog.V(2).Info("Reconnected to TrueNAS WebSocket API")
-
-			c.wg.Add(1)
-			go c.readLoop(context.Background())
-
-			// Add random delay to avoid rate limiting on reconnection
-			delay := time.Duration(rand.Intn(3000)) * time.Millisecond
-			klog.V(3).Infof("Waiting %v before re-authentication to avoid rate limiting", delay)
-			time.Sleep(delay)
-
-			if err := c.authenticate(); err != nil {
-				klog.Errorf("Re-authentication failed: %v", err)
-				c.connMutex.Lock()
-				c.conn.Close()
-				c.conn = nil
-				c.connMutex.Unlock()
-
-				// Try again with backoff
-				delay *= 2
-				if delay > c.maxReconnectDelay {
-					delay = c.maxReconnectDelay
-				}
-				continue
-			}
-
-			klog.Info("Successfully reconnected and authenticated with TrueNAS")
-			return
-		}
-	}
-}
-
-// readLoop continuously reads messages from the WebSocket connection
-func (c *APIClient) readLoop(ctx context.Context) {
-	defer c.wg.Done()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-c.done:
+		case <-done:
 			return
 		default:
-			c.connMutex.RLock()
-			conn := c.conn
-			c.connMutex.RUnlock()
+		}
 
-			if conn == nil {
-				time.Sleep(100 * time.Millisecond)
-				continue
-			}
-
-			var resp Response
-			err := conn.ReadJSON(&resp)
-			if err != nil {
-				klog.Errorf("Read error: %v", err)
-
-				c.connMutex.Lock()
-				c.conn.Close()
-				c.conn = nil
-				c.connMutex.Unlock()
-
-				// Clear pending requests
-				c.pendingMux.Lock()
-				for id, ch := range c.pending {
-					close(ch)
-					delete(c.pending, id)
-				}
-				c.pendingMux.Unlock()
-
-				// Trigger reconnection
-				go c.reconnect(context.Background())
+		var resp response
+		if err := wsjson.Read(context.Background(), conn, &resp); err != nil {
+			select {
+			case <-done:
+				return // Clean shutdown
+			default:
+				klog.V(3).Infof("TrueNAS read error: %v", err)
+				c.handleDisconnect(conn)
 				return
 			}
+		}
 
-			conn.SetReadDeadline(time.Now().Add(c.pongTimeout))
-
-			c.pendingMux.RLock()
-			ch, ok := c.pending[resp.ID]
-			c.pendingMux.RUnlock()
-
-			if ok {
-				ch <- &resp
-				c.pendingMux.Lock()
-				delete(c.pending, resp.ID)
-				c.pendingMux.Unlock()
+		if ch, ok := c.pending.LoadAndDelete(resp.ID); ok {
+			select {
+			case ch.(chan response) <- resp:
+			default:
+				klog.V(4).Infof("Dropped response for request %d: no receiver", resp.ID)
 			}
 		}
 	}
 }
 
-// pingLoop sends periodic ping messages to keep the connection alive
-func (c *APIClient) pingLoop(ctx context.Context) {
-	defer c.wg.Done()
-
-	ticker := time.NewTicker(c.pingInterval)
+func (c *Client) pingLoop(conn *websocket.Conn, done chan struct{}) {
+	ticker := time.NewTicker(c.config.PingInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ctx.Done():
-			return
-		case <-c.done:
+		case <-done:
 			return
 		case <-ticker.C:
-			c.connMutex.Lock()
-			if c.conn != nil {
-				c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-				if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					klog.Errorf("Ping failed: %v", err)
+			pingCtx, cancel := context.WithTimeout(context.Background(), defaultPingTimeout)
+			err := conn.Ping(pingCtx)
+			cancel()
+
+			if err != nil {
+				select {
+				case <-done:
+					return
+				default:
+					klog.V(3).Infof("TrueNAS ping failed: %v", err)
+					c.handleDisconnect(conn)
+					return
 				}
 			}
-			c.connMutex.Unlock()
 		}
 	}
 }
 
-// Call executes a JSON-RPC method and returns the result
-func (c *APIClient) Call(ctx context.Context, method string, params any, result any) error {
-	id := c.requestID.Add(1)
+func (c *Client) handleDisconnect(conn *websocket.Conn) {
+	c.connMu.Lock()
+	// Check if this is still the active connection
+	if c.conn != conn {
+		c.connMu.Unlock()
+		return
+	}
 
-	req := Request{
+	// Signal connection goroutines to stop
+	if c.connDone != nil {
+		close(c.connDone)
+		c.connDone = nil
+	}
+	c.conn = nil
+	c.connMu.Unlock()
+
+	conn.Close(websocket.StatusNormalClosure, "")
+
+	// Fail pending requests
+	c.pending.Range(func(key, value any) bool {
+		select {
+		case value.(chan response) <- response{Error: &RPCError{Code: -1, Message: "connection lost"}}:
+		default:
+		}
+		c.pending.Delete(key)
+		return true
+	})
+
+	klog.Warning("Disconnected from TrueNAS")
+
+	// Start reconnection if not already reconnecting and not closed
+	if !c.closed.Load() && c.reconnecting.CompareAndSwap(false, true) {
+		go c.reconnectLoop()
+	}
+}
+
+func (c *Client) reconnectLoop() {
+	defer c.reconnecting.Store(false)
+
+	delay := c.config.ReconnectMin
+	attempt := 0
+	maxAttempts := c.config.MaxReconnectAttempts
+
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-time.After(delay):
+		}
+
+		if c.closed.Load() || c.Connected() {
+			return
+		}
+
+		attempt++
+
+		// Check max attempts (0 means unlimited)
+		if maxAttempts > 0 && attempt > maxAttempts {
+			klog.Errorf("TrueNAS reconnection failed after %d attempts, giving up", maxAttempts)
+			return
+		}
+
+		if maxAttempts > 0 {
+			klog.V(2).Infof("TrueNAS reconnect attempt %d/%d", attempt, maxAttempts)
+		} else {
+			klog.V(2).Infof("TrueNAS reconnect attempt %d", attempt)
+		}
+
+		dialCtx, cancel := context.WithTimeout(context.Background(), defaultDialTimeout)
+		err := c.dial(dialCtx)
+		cancel()
+
+		if err == nil {
+			klog.Infof("Reconnected to TrueNAS after %d attempts", attempt)
+			return
+		}
+
+		klog.V(2).Infof("TrueNAS reconnect failed: %v", err)
+
+		// Exponential backoff
+		delay = time.Duration(float64(delay) * c.config.ReconnectFactor)
+		if delay > c.config.ReconnectMax {
+			delay = c.config.ReconnectMax
+		}
+	}
+}
+
+// Connected reports whether the client has an active connection.
+func (c *Client) Connected() bool {
+	c.connMu.RLock()
+	defer c.connMu.RUnlock()
+	return c.conn != nil
+}
+
+// Call invokes a JSON-RPC method. Returns ErrNotConnected if disconnected.
+func (c *Client) Call(ctx context.Context, method string, params, result any) error {
+	c.connMu.RLock()
+	conn := c.conn
+	c.connMu.RUnlock()
+
+	if conn == nil {
+		return ErrNotConnected
+	}
+	return c.callOn(ctx, conn, method, params, result)
+}
+
+func (c *Client) callOn(ctx context.Context, conn *websocket.Conn, method string, params, result any) error {
+	// Apply default timeout if context has no deadline
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.config.CallTimeout)
+		defer cancel()
+	}
+
+	id := c.nextID.Add(1)
+	req := request{
 		ID:      id,
 		Method:  method,
 		Params:  params,
-		JSONRPC: JSONRPC_VERSION,
+		JSONRPC: jsonRPCVersion,
 	}
 
-	respCh := make(chan *Response, 1)
-	c.pendingMux.Lock()
-	c.pending[id] = respCh
-	c.pendingMux.Unlock()
+	respCh := make(chan response, 1)
+	c.pending.Store(id, respCh)
+	defer c.pending.Delete(id)
 
-	c.connMutex.Lock()
-	if c.conn == nil {
-		c.connMutex.Unlock()
-		return fmt.Errorf("no connection available")
-	}
-	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	err := c.conn.WriteJSON(req)
-	c.connMutex.Unlock()
-
-	if err != nil {
-		c.pendingMux.Lock()
-		delete(c.pending, id)
-		c.pendingMux.Unlock()
-		return fmt.Errorf("failed to send request: %w", err)
+	if err := wsjson.Write(ctx, conn, req); err != nil {
+		return &ConnectionError{Op: "write", Err: err}
 	}
 
 	select {
 	case <-ctx.Done():
-		c.pendingMux.Lock()
-		delete(c.pending, id)
-		c.pendingMux.Unlock()
 		return ctx.Err()
-	case resp, ok := <-respCh:
-		if !ok {
-			return fmt.Errorf("connection closed while waiting for response")
-		}
-
+	case resp := <-respCh:
 		if resp.Error != nil {
 			return resp.Error
 		}
-
-		if result != nil && resp.Result != nil {
-			return json.Unmarshal(resp.Result, result)
+		if result != nil && len(resp.Result) > 0 {
+			if err := json.Unmarshal(resp.Result, result); err != nil {
+				return fmt.Errorf("unmarshal result: %w", err)
+			}
 		}
-
 		return nil
 	}
 }
 
-// Close closes the WebSocket connection and cleans up resources
-func (c *APIClient) Close() error {
-	select {
-	case <-c.done:
-	default:
-		close(c.done)
+// Close closes the client permanently.
+func (c *Client) Close() error {
+	if c.closed.Swap(true) {
+		return nil // Already closed
 	}
 
-	c.connMutex.Lock()
-	if c.conn != nil {
-		c.conn.Close()
-	}
-	c.connMutex.Unlock()
+	klog.V(2).Info("Closing TrueNAS client")
 
-	c.wg.Wait()
+	close(c.done)
+
+	c.connMu.Lock()
+	conn := c.conn
+	if c.connDone != nil {
+		close(c.connDone)
+	}
+	c.conn = nil
+	c.connMu.Unlock()
+
+	if conn != nil {
+		return conn.Close(websocket.StatusNormalClosure, "")
+	}
 	return nil
 }
 
-// Ping checks if the connection is alive
-func (c *APIClient) Ping(ctx context.Context) error {
-	var result any
-	return c.Call(ctx, "core.ping", nil, &result)
-}
-
-// GetSystemInfo retrieves system information
-func (c *APIClient) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
-	var info SystemInfo
-	err := c.Call(ctx, "system.info", nil, &info)
-	return &info, err
-}
-
-// SystemInfo represents TrueNAS system information
-type SystemInfo struct {
-	Version              string    `json:"version"`
-	BuildTime            any       `json:"buildtime"` // date-time object from TrueNAS
-	Hostname             string    `json:"hostname"`
-	PhysMem              int64     `json:"physmem"`
-	Model                string    `json:"model"`
-	Cores                int       `json:"cores"`
-	PhysicalCores        int       `json:"physical_cores"`
-	LoadAvg              []float64 `json:"loadavg"`
-	Uptime               string    `json:"uptime"`
-	UptimeSeconds        float64   `json:"uptime_seconds"`
-	SystemSerial         *string   `json:"system_serial"`
-	SystemProduct        *string   `json:"system_product"`
-	SystemProductVersion *string   `json:"system_product_version"`
-	License              any       `json:"license"`  // object or null
-	BootTime             any       `json:"boottime"` // date-time object from TrueNAS
-	DateTime             any       `json:"datetime"` // date-time object from TrueNAS
-	Timezone             string    `json:"timezone"`
-	SystemManufacturer   *string   `json:"system_manufacturer"`
-	ECCMemory            bool      `json:"ecc_memory"`
+// Ping checks if the server is responsive by calling core.ping.
+func (c *Client) Ping(ctx context.Context) error {
+	return c.Call(ctx, "core.ping", nil, nil)
 }

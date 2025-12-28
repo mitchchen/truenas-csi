@@ -320,7 +320,7 @@ type ZFSPropSource struct {
 	Value any    `json:"value"`
 }
 
-func (c *APIClient) CreateDataset(ctx context.Context, options *DatasetCreateOptions) (*Dataset, error) {
+func (c *Client) CreateDataset(ctx context.Context, options *DatasetCreateOptions) (*Dataset, error) {
 	var result map[string]any
 	err := c.Call(ctx, CREATE_DATASET, []any{options}, &result)
 	if err != nil {
@@ -333,7 +333,7 @@ func (c *APIClient) CreateDataset(ctx context.Context, options *DatasetCreateOpt
 	return dataset, nil
 }
 
-func (c *APIClient) GetDataset(ctx context.Context, path string) (*Dataset, error) {
+func (c *Client) GetDataset(ctx context.Context, path string) (*Dataset, error) {
 	options := &DatasetQueryOptions{
 		Extra: DatasetGetExtraOptions{
 			Properties: []string{},
@@ -371,7 +371,7 @@ func getString(m map[string]any, key string) string {
 	return ""
 }
 
-func (c *APIClient) DeleteDataset(ctx context.Context, path string) error {
+func (c *Client) DeleteDataset(ctx context.Context, path string) error {
 	options := &DatasetDeleteOptions{
 		Recursive: true,
 		Force:     true,
@@ -384,7 +384,7 @@ func (c *APIClient) DeleteDataset(ctx context.Context, path string) error {
 	return nil
 }
 
-func (c *APIClient) UpdateDataset(ctx context.Context, path string, updates *DatasetUpdateOptions) error {
+func (c *Client) UpdateDataset(ctx context.Context, path string, updates *DatasetUpdateOptions) error {
 	// TrueNAS returns a complex PoolDatasetEntry, but we just need to verify success
 	var result any
 	err := c.Call(ctx, UPDATE_DATASET, []any{path, updates}, &result)
@@ -394,7 +394,7 @@ func (c *APIClient) UpdateDataset(ctx context.Context, path string, updates *Dat
 	return nil
 }
 
-func (c *APIClient) CreateNFSShare(ctx context.Context, options *NFSShareCreateOptions) (*NFSShare, error) {
+func (c *Client) CreateNFSShare(ctx context.Context, options *NFSShareCreateOptions) (*NFSShare, error) {
 	var share NFSShare
 	err := c.Call(ctx, CREATE_NFS_SHARE, []any{options}, &share)
 	if err != nil {
@@ -403,7 +403,7 @@ func (c *APIClient) CreateNFSShare(ctx context.Context, options *NFSShareCreateO
 	return &share, nil
 }
 
-func (c *APIClient) GetNFSShare(ctx context.Context, id int) (*NFSShare, error) {
+func (c *Client) GetNFSShare(ctx context.Context, id int) (*NFSShare, error) {
 	options := &QueryOptions{}
 
 	var share NFSShare
@@ -414,7 +414,7 @@ func (c *APIClient) GetNFSShare(ctx context.Context, id int) (*NFSShare, error) 
 	return &share, nil
 }
 
-func (c *APIClient) GetNFSShareByPath(ctx context.Context, path string) (*NFSShare, error) {
+func (c *Client) GetNFSShareByPath(ctx context.Context, path string) (*NFSShare, error) {
 	filters := [][]any{
 		{"path", "=", path},
 	}
@@ -433,7 +433,7 @@ func (c *APIClient) GetNFSShareByPath(ctx context.Context, path string) (*NFSSha
 	return &shares[0], nil
 }
 
-func (c *APIClient) DeleteNFSShare(ctx context.Context, id int) error {
+func (c *Client) DeleteNFSShare(ctx context.Context, id int) error {
 	err := c.Call(ctx, DELETE_NFS_SHARE, []any{id}, nil)
 	if err != nil {
 		return fmt.Errorf("failed to delete NFS share %d: %w", id, err)
@@ -441,7 +441,7 @@ func (c *APIClient) DeleteNFSShare(ctx context.Context, id int) error {
 	return nil
 }
 
-func (c *APIClient) CreateISCSITarget(ctx context.Context, name, alias string) (*ISCSITarget, error) {
+func (c *Client) CreateISCSITarget(ctx context.Context, name, alias string) (*ISCSITarget, error) {
 	params := &ISCSITargetCreateOptions{
 		Name:  name,
 		Alias: alias,
@@ -461,7 +461,7 @@ func (c *APIClient) CreateISCSITarget(ctx context.Context, name, alias string) (
 	return &target, nil
 }
 
-func (c *APIClient) CreateISCSIExtent(ctx context.Context, name, disk string, blocksize int) (*ISCSIExtent, error) {
+func (c *Client) CreateISCSIExtent(ctx context.Context, name, disk string, blocksize int) (*ISCSIExtent, error) {
 	params := &ISCSIExtentCreateOptions{
 		Name:      name,
 		Type:      "DISK",
@@ -478,7 +478,7 @@ func (c *APIClient) CreateISCSIExtent(ctx context.Context, name, disk string, bl
 	return &extent, nil
 }
 
-func (c *APIClient) CreateISCSITargetExtent(ctx context.Context, targetID, extentID, lunID int) (*ISCSITargetExtent, error) {
+func (c *Client) CreateISCSITargetExtent(ctx context.Context, targetID, extentID, lunID int) (*ISCSITargetExtent, error) {
 	params := &ISCSITargetExtentCreateOptions{
 		Target: targetID,
 		Extent: extentID,
@@ -493,7 +493,7 @@ func (c *APIClient) CreateISCSITargetExtent(ctx context.Context, targetID, exten
 	return &targetExtent, nil
 }
 
-func (c *APIClient) DeleteISCSITarget(ctx context.Context, id int) error {
+func (c *Client) DeleteISCSITarget(ctx context.Context, id int) error {
 	var targetExtents []ISCSITargetExtent
 	filters := [][]any{
 		{"target", "=", id},
@@ -518,7 +518,7 @@ func (c *APIClient) DeleteISCSITarget(ctx context.Context, id int) error {
 	return nil
 }
 
-func (c *APIClient) DeleteISCSIExtent(ctx context.Context, id int) error {
+func (c *Client) DeleteISCSIExtent(ctx context.Context, id int) error {
 	err := c.Call(ctx, DELETE_ISCSI_EXTENT, []any{id, false, false}, nil)
 	if err != nil {
 		return fmt.Errorf("failed to delete iSCSI extent %d: %w", id, err)
@@ -526,7 +526,7 @@ func (c *APIClient) DeleteISCSIExtent(ctx context.Context, id int) error {
 	return nil
 }
 
-func (c *APIClient) CreateSnapshot(ctx context.Context, dataset, name string, recursive bool) (*Snapshot, error) {
+func (c *Client) CreateSnapshot(ctx context.Context, dataset, name string, recursive bool) (*Snapshot, error) {
 	params := &SnapshotCreateOptions{
 		Dataset:   dataset,
 		Name:      name,
@@ -541,7 +541,7 @@ func (c *APIClient) CreateSnapshot(ctx context.Context, dataset, name string, re
 	return &snapshot, nil
 }
 
-func (c *APIClient) DeleteSnapshot(ctx context.Context, name string) error {
+func (c *Client) DeleteSnapshot(ctx context.Context, name string) error {
 	options := &SnapshotDeleteOptions{
 		Defer: false,
 	}
@@ -553,7 +553,7 @@ func (c *APIClient) DeleteSnapshot(ctx context.Context, name string) error {
 	return nil
 }
 
-func (c *APIClient) CloneSnapshot(ctx context.Context, snapshot, destination string) (*Dataset, error) {
+func (c *Client) CloneSnapshot(ctx context.Context, snapshot, destination string) (*Dataset, error) {
 	params := SnapshotClone{
 		Snapshot:   snapshot,
 		DatasetDST: destination,
@@ -567,7 +567,7 @@ func (c *APIClient) CloneSnapshot(ctx context.Context, snapshot, destination str
 	return c.GetDataset(ctx, destination)
 }
 
-func (c *APIClient) ListSnapshots(ctx context.Context, dataset string) ([]Snapshot, error) {
+func (c *Client) ListSnapshots(ctx context.Context, dataset string) ([]Snapshot, error) {
 	filters := [][]any{
 		{"dataset", "=", dataset},
 	}
@@ -581,7 +581,7 @@ func (c *APIClient) ListSnapshots(ctx context.Context, dataset string) ([]Snapsh
 	return snapshots, nil
 }
 
-func (c *APIClient) GetPool(ctx context.Context, name string) (*Pool, error) {
+func (c *Client) GetPool(ctx context.Context, name string) (*Pool, error) {
 	var pools []Pool
 	filters := [][]any{
 		{"name", "=", name},
@@ -598,7 +598,7 @@ func (c *APIClient) GetPool(ctx context.Context, name string) (*Pool, error) {
 	return &pools[0], nil
 }
 
-func (c *APIClient) ListPools(ctx context.Context) ([]Pool, error) {
+func (c *Client) ListPools(ctx context.Context) ([]Pool, error) {
 	var pools []Pool
 	filters := [][]any{} // Empty filters to get all pools
 	options := &QueryOptions{}
@@ -610,7 +610,7 @@ func (c *APIClient) ListPools(ctx context.Context) ([]Pool, error) {
 	return pools, nil
 }
 
-func (c *APIClient) GetAvailableSpace(ctx context.Context, poolName string) (int64, error) {
+func (c *Client) GetAvailableSpace(ctx context.Context, poolName string) (int64, error) {
 	options := &ZFSResourceQueryOptions{
 		Paths:      []string{poolName},
 		Properties: []string{"available"},

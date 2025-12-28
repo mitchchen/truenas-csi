@@ -34,7 +34,7 @@ type Driver struct {
 	nodeID   string
 	endpoint string
 
-	client *client.APIClient
+	client *client.Client
 
 	defaultPool  string
 	nfsServer    string
@@ -123,26 +123,23 @@ func NewDriver(config *DriverConfig) (*Driver, error) {
 		return nil, fmt.Errorf("invalid iSCSI IQN base format: %w", err)
 	}
 
-	tnURL, err := url.Parse(config.TrueNASURL)
-	if err != nil {
-		return nil, fmt.Errorf("Invalid TrueNAS URL")
-	}
+	ctx := context.Background()
 
-	clientConfig := &client.ClientConfig{
-		URL:                *tnURL,
+	cfg := client.Config{
+		URL:                config.TrueNASURL,
 		APIKey:             config.TrueNASAPIKey,
 		InsecureSkipVerify: config.TrueNASInsecure,
 	}
 
-	truenasClient, err := client.NewClient(clientConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create TrueNAS client: %w", err)
+	truenasClient := client.New(cfg)
+	if err := truenasClient.Connect(ctx); err != nil {
+		return nil, fmt.Errorf("failed to connect to TrueNAS: %w", err)
 	}
 
 	// Test connection
-	ctx := context.Background()
 	if err := truenasClient.Ping(ctx); err != nil {
-		return nil, fmt.Errorf("failed to connect to TrueNAS: %w", err)
+		truenasClient.Close()
+		return nil, fmt.Errorf("failed to ping TrueNAS: %w", err)
 	}
 
 	// Validate that the default pool exists
