@@ -192,7 +192,7 @@ type Driver struct {
 
 	defaultPool  string
 	nfsServer    string
-	iscsiPortal  string
+	iscsiPortals []string
 	iscsiIQNBase string
 
 	identityServer   csi.IdentityServer
@@ -234,7 +234,7 @@ type DriverConfig struct {
 
 	DefaultPool  string
 	NFSServer    string
-	ISCSIPortal  string
+	ISCSIPortals []string
 	ISCSIIQNBase string
 
 	// Logger is the structured logger for the driver and client.
@@ -292,12 +292,12 @@ func NewDriver(config *DriverConfig) (*Driver, error) {
 	}
 
 	// Derive iSCSI portal from TrueNAS URL if not explicitly set (default port 3260)
-	if config.ISCSIPortal == "" {
+	if len(config.ISCSIPortals) == 0 {
 		if parsedURL, err := url.Parse(config.TrueNASURL); err == nil {
 			host := parsedURL.Hostname()
 			if host != "" {
-				config.ISCSIPortal = host + ":3260"
-				log.V(LogLevelInfo).Info("Derived iSCSI portal from TrueNAS URL", "iscsiPortal", config.ISCSIPortal)
+				config.ISCSIPortals = []string{host + ":3260"}
+				log.V(LogLevelInfo).Info("Derived iSCSI portal from TrueNAS URL", "iscsiPortal", host+":3260")
 			}
 		}
 	}
@@ -347,7 +347,7 @@ func NewDriver(config *DriverConfig) (*Driver, error) {
 		client:       truenasClient,
 		defaultPool:  config.DefaultPool,
 		nfsServer:    config.NFSServer,
-		iscsiPortal:  config.ISCSIPortal,
+		iscsiPortals: config.ISCSIPortals,
 		iscsiIQNBase: config.ISCSIIQNBase,
 	}
 
@@ -699,9 +699,17 @@ func (d *Driver) NFSServer() string {
 	return d.nfsServer
 }
 
-// ISCSIPortal returns the configured iSCSI portal address
+// ISCSIPortal returns the primary (first) iSCSI portal address.
 func (d *Driver) ISCSIPortal() string {
-	return d.iscsiPortal
+	if len(d.iscsiPortals) == 0 {
+		return ""
+	}
+	return d.iscsiPortals[0]
+}
+
+// ISCSIPortals returns all configured iSCSI portal addresses.
+func (d *Driver) ISCSIPortals() []string {
+	return d.iscsiPortals
 }
 
 // DefaultPool returns the default storage pool
@@ -882,8 +890,8 @@ func (d *Driver) reconstructVolumeFromTrueNAS(ctx context.Context, volumeID stri
 					volInfo.ISCSITargetID = target.ID
 					// Construct the full IQN
 					volInfo.TargetIQN = d.iscsiIQNBase + ":" + target.Name
-					volInfo.TargetPortal = d.iscsiPortal
-					volInfo.VolumeContext["targetPortal"] = d.iscsiPortal
+					volInfo.TargetPortal = d.ISCSIPortal()
+					volInfo.VolumeContext["targetPortal"] = d.ISCSIPortal()
 					volInfo.VolumeContext["targetIQN"] = volInfo.TargetIQN
 					volInfo.VolumeContext["lun"] = fmt.Sprintf("%d", volInfo.LUN)
 				}
