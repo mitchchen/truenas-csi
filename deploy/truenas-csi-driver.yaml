@@ -161,7 +161,7 @@ data:
   truenasInsecure: "true"  # Set to "true" for self-signed certificates, "false" or remove for valid certs
   defaultPool: "tank"
   nfsServer: "YOUR-TRUENAS-IP"
-  iscsiPortal: "YOUR-TRUENAS-IP:3260"
+  iscsiPortal: "YOUR-TRUENAS-IP-1:3260,YOUR-TRUENAS-IP-2:3260"
   iscsiIQNBase: "iqn.2000-01.io.truenas"  # Optional: Custom IQN prefix (default: iqn.2000-01.io.truenas)
 
 ---
@@ -363,7 +363,18 @@ spec:
           lifecycle:
             postStart:
               exec:
-                command: ["/bin/sh", "-c", "mkdir -p /run/lock/iscsi && mv /usr/sbin/iscsiadm /usr/sbin/iscsiadm.orig 2>/dev/null; printf '#!/bin/sh\\nnsenter --mount=/host/proc/1/ns/mnt -- /usr/sbin/iscsiadm \"$@\"\\n' > /usr/sbin/iscsiadm && chmod +x /usr/sbin/iscsiadm"]
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    mkdir -p /run/lock/iscsi
+                    mv /usr/sbin/iscsiadm /usr/sbin/iscsiadm.orig 2>/dev/null
+                    printf '#!/bin/sh\nnsenter --mount=/host/proc/1/ns/mnt -- /usr/sbin/iscsiadm "$@"\n' > /usr/sbin/iscsiadm
+                    chmod +x /usr/sbin/iscsiadm
+                    if ! grep -q 'vendor.*TrueNAS' /host/etc/multipath/multipath.conf 2>/dev/null; then
+                      mkdir -p /host/etc/multipath
+                      printf '\ndevices {\n  device {\n    vendor            "TrueNAS"\n    product           "iSCSI Disk"\n    path_grouping_policy group_by_prio\n    prio              alua\n    path_checker      tur\n    hardware_handler  "1 alua"\n    failback          immediate\n    fast_io_fail_tmo  15\n  }\n}\n' >> /host/etc/multipath/multipath.conf
+                    fi
           securityContext:
             privileged: true
           args:
