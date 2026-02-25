@@ -42,7 +42,7 @@ func TestBuildConnector_SinglePortal(t *testing.T) {
 		t.Fatalf("TargetPortals = %v, want [10.0.0.1:3260]", c.TargetPortals)
 	}
 	if c.DoCHAPDiscovery {
-		t.Fatal("DoCHAPDiscovery should be false when MultipathEnabled is false")
+		t.Fatal("DoCHAPDiscovery should be false when PersistentSessions is false")
 	}
 }
 
