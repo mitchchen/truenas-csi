@@ -354,6 +354,19 @@ func MockSnapshotTask(id int, dataset string, lifetimeValue int, lifetimeUnit st
 	}
 }
 
+// MockISCSIPortal returns a mock iSCSI portal response.
+func MockISCSIPortal(id int, ips []string, port int) ISCSIPortal {
+	listen := make([]ISCSIPortalListen, len(ips))
+	for i, ip := range ips {
+		listen[i] = ISCSIPortalListen{IP: ip, Port: port}
+	}
+	return ISCSIPortal{
+		ID:     id,
+		Tag:    id,
+		Listen: listen,
+	}
+}
+
 // MockZFSResource returns a mock ZFS resource response for GetAvailableSpace.
 func MockZFSResource(name string, available int64) ZFSResource {
 	return ZFSResource{

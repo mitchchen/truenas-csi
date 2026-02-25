@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -41,6 +42,7 @@ const (
 	methodISCSIInitiatorCreate    = "iscsi.initiator.create"
 	methodISCSIInitiatorQuery     = "iscsi.initiator.query"
 	methodISCSIInitiatorDelete    = "iscsi.initiator.delete"
+	methodISCSIPortalQuery        = "iscsi.portal.query"
 )
 
 // TrueNAS API method names for snapshots
@@ -67,11 +69,6 @@ const (
 // TrueNAS API method names for ZFS resources
 const (
 	methodZFSResourceQuery = "zfs.resource.query"
-)
-
-// Default configuration values
-const (
-	defaultISCSIPortalID = 1
 )
 
 // Dataset represents a ZFS dataset in TrueNAS.
@@ -334,6 +331,32 @@ type ISCSIPortal struct {
 type ISCSIPortalListen struct {
 	IP   string `json:"ip"`
 	Port int    `json:"port"`
+}
+
+// GetPortalID returns the TrueNAS database ID for the portal that listens on
+// the given address. portalAddr may include a port (e.g. "10.0.0.1:3260") or
+// be just an IP ("10.0.0.1") — the port is stripped before matching.
+func (c *Client) GetPortalID(ctx context.Context, portalAddr string) (int, error) {
+	// Strip port if present
+	host := portalAddr
+	if h, _, err := net.SplitHostPort(portalAddr); err == nil {
+		host = h
+	}
+
+	var portals []ISCSIPortal
+	if err := c.Call(ctx, methodISCSIPortalQuery, []any{}, &portals); err != nil {
+		return 0, fmt.Errorf("failed to query iSCSI portals: %w", err)
+	}
+
+	for _, p := range portals {
+		for _, l := range p.Listen {
+			if l.IP == host {
+				return p.ID, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("no iSCSI portal found for address %q", portalAddr)
 }
 
 // ISCSIInitiator represents an iSCSI initiator configuration in TrueNAS.
@@ -837,16 +860,21 @@ func (c *Client) GetISCSITargetByID(ctx context.Context, id int) (*ISCSITarget, 
 }
 
 // CreateISCSITarget creates a new iSCSI target with the specified name and alias.
-func (c *Client) CreateISCSITarget(ctx context.Context, name, alias string) (*ISCSITarget, error) {
-	return c.CreateISCSITargetWithAuth(ctx, name, alias, 0, 0)
+func (c *Client) CreateISCSITarget(ctx context.Context, name, alias, portalAddr string) (*ISCSITarget, error) {
+	return c.CreateISCSITargetWithAuth(ctx, name, alias, 0, 0, portalAddr)
 }
 
 // CreateISCSITargetWithAuth creates a new iSCSI target with optional auth and initiator groups.
 // authTag: CHAP authentication group tag (0 to skip)
 // initiatorID: Initiator group ID (0 to skip)
-func (c *Client) CreateISCSITargetWithAuth(ctx context.Context, name, alias string, authTag, initiatorID int) (*ISCSITarget, error) {
+// portalAddr: Portal address (e.g. "10.0.0.1:3260" or "10.0.0.1") used to look up the portal ID
+func (c *Client) CreateISCSITargetWithAuth(ctx context.Context, name, alias string, authTag, initiatorID int, portalAddr string) (*ISCSITarget, error) {
+	portalID, err := c.GetPortalID(ctx, portalAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve portal ID for %q: %w", portalAddr, err)
+	}
 	group := ISCSITargetGroup{
-		Portal: defaultISCSIPortalID,
+		Portal: portalID,
 	}
 
 	if authTag > 0 {
@@ -866,7 +894,7 @@ func (c *Client) CreateISCSITargetWithAuth(ctx context.Context, name, alias stri
 	}
 
 	var target ISCSITarget
-	err := c.Call(ctx, methodISCSITargetCreate, []any{params}, &target)
+	err = c.Call(ctx, methodISCSITargetCreate, []any{params}, &target)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create iSCSI target: %w", err)
 	}

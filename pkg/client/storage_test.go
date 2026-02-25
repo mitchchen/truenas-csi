@@ -313,13 +313,18 @@ func TestCreateISCSITarget_Success(t *testing.T) {
 	mock := NewMockTrueNASServer()
 	defer mock.Close()
 
+	mock.SetResponse(methodISCSIPortalQuery, MockResponse{
+		Result: []ISCSIPortal{
+			MockISCSIPortal(1, []string{"10.0.0.1"}, 3260),
+		},
+	})
 	mock.SetResponse(methodISCSITargetCreate, MockResponse{
 		Result: MockISCSITarget(1, "target1", "alias1"),
 	})
 
 	client := connectTestClient(t, mock)
 
-	target, err := client.CreateISCSITarget(testContext(t), "target1", "alias1")
+	target, err := client.CreateISCSITarget(testContext(t), "target1", "alias1", "10.0.0.1:3260")
 
 	assertNoError(t, err)
 	assertNotNil(t, target)
@@ -333,6 +338,11 @@ func TestCreateISCSITargetWithAuth_Success(t *testing.T) {
 	mock := NewMockTrueNASServer()
 	defer mock.Close()
 
+	mock.SetResponse(methodISCSIPortalQuery, MockResponse{
+		Result: []ISCSIPortal{
+			MockISCSIPortal(1, []string{"10.0.0.1"}, 3260),
+		},
+	})
 	mock.SetResponse(methodISCSITargetCreate, MockResponse{
 		Result: ISCSITarget{
 			ID:    2,
@@ -347,7 +357,7 @@ func TestCreateISCSITargetWithAuth_Success(t *testing.T) {
 
 	client := connectTestClient(t, mock)
 
-	target, err := client.CreateISCSITargetWithAuth(testContext(t), "target2", "alias2", 5, 10)
+	target, err := client.CreateISCSITargetWithAuth(testContext(t), "target2", "alias2", 5, 10, "10.0.0.1:3260")
 
 	assertNoError(t, err)
 	assertNotNil(t, target)
@@ -356,6 +366,80 @@ func TestCreateISCSITargetWithAuth_Success(t *testing.T) {
 	assertEqual(t, target.Groups[0].AuthMethod, "CHAP")
 	assertEqual(t, target.Groups[0].Auth, 5)
 	assertEqual(t, target.Groups[0].Initiator, 10)
+}
+
+func TestGetPortalID_Found(t *testing.T) {
+	mock := NewMockTrueNASServer()
+	defer mock.Close()
+
+	mock.SetResponse(methodISCSIPortalQuery, MockResponse{
+		Result: []ISCSIPortal{
+			MockISCSIPortal(1, []string{"10.0.0.1"}, 3260),
+			MockISCSIPortal(3, []string{"10.0.0.2"}, 3260),
+		},
+	})
+
+	client := connectTestClient(t, mock)
+	id, err := client.GetPortalID(testContext(t), "10.0.0.2:3260")
+	assertNoError(t, err)
+	assertEqual(t, id, 3)
+}
+
+func TestGetPortalID_NoPort(t *testing.T) {
+	mock := NewMockTrueNASServer()
+	defer mock.Close()
+
+	mock.SetResponse(methodISCSIPortalQuery, MockResponse{
+		Result: []ISCSIPortal{
+			MockISCSIPortal(2, []string{"192.168.1.50"}, 3260),
+		},
+	})
+
+	client := connectTestClient(t, mock)
+	id, err := client.GetPortalID(testContext(t), "192.168.1.50")
+	assertNoError(t, err)
+	assertEqual(t, id, 2)
+}
+
+func TestGetPortalID_NotFound(t *testing.T) {
+	mock := NewMockTrueNASServer()
+	defer mock.Close()
+
+	mock.SetResponse(methodISCSIPortalQuery, MockResponse{
+		Result: []ISCSIPortal{
+			MockISCSIPortal(1, []string{"10.0.0.1"}, 3260),
+		},
+	})
+
+	client := connectTestClient(t, mock)
+	_, err := client.GetPortalID(testContext(t), "10.0.0.99:3260")
+	assertError(t, err)
+}
+
+func TestCreateISCSITargetWithAuth_DynamicPortal(t *testing.T) {
+	mock := NewMockTrueNASServer()
+	defer mock.Close()
+
+	mock.SetResponse(methodISCSIPortalQuery, MockResponse{
+		Result: []ISCSIPortal{
+			MockISCSIPortal(7, []string{"10.0.0.1"}, 3260),
+		},
+	})
+	mock.SetResponse(methodISCSITargetCreate, MockResponse{
+		Result: MockISCSITarget(1, "test-target", "alias"),
+	})
+
+	client := connectTestClient(t, mock)
+	target, err := client.CreateISCSITargetWithAuth(testContext(t), "test-target", "alias", 0, 0, "10.0.0.1:3260")
+	assertNoError(t, err)
+	assertNotNil(t, target)
+
+	// Verify the portal ID sent to TrueNAS was 7, not 1
+	params := getRequestParams[[]any](t, mock, methodISCSITargetCreate)
+	data, _ := json.Marshal(params[0])
+	if !contains(string(data), `"portal":7`) {
+		t.Fatalf("expected portal ID 7 in request, got: %s", data)
+	}
 }
 
 func TestGetISCSITargetByName_Success(t *testing.T) {
