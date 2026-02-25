@@ -62,3 +62,18 @@ func TestBuildConnector_MultiplePortals(t *testing.T) {
 		t.Fatalf("TargetPortals = %v, want [10.0.0.1:3260 10.0.0.2:3260]", c.TargetPortals)
 	}
 }
+
+func TestBuildConnector_PersistentSessions(t *testing.T) {
+	h := &ISCSIHandler{portals: []string{"10.0.0.1:3260"}}
+	cfg := &ISCSIConfig{
+		TargetIQN:          "iqn.2000-01.io.truenas:test",
+		LUN:                0,
+		CHAPUsername:       "user",
+		CHAPPassword:       "pass",
+		PersistentSessions: true,
+	}
+	c := h.buildConnector("vol-1", cfg)
+	if c.DoCHAPDiscovery {
+		t.Fatal("DoCHAPDiscovery should be false when PersistentSessions is true")
+	}
+}

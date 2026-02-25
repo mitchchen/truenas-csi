@@ -709,7 +709,9 @@ func (d *Driver) ISCSIPortal() string {
 
 // ISCSIPortals returns all configured iSCSI portal addresses.
 func (d *Driver) ISCSIPortals() []string {
-	return d.iscsiPortals
+	result := make([]string, len(d.iscsiPortals))
+	copy(result, d.iscsiPortals)
+	return result
 }
 
 // DefaultPool returns the default storage pool
