@@ -500,7 +500,7 @@ func (s *ControllerServer) ensureISCSIChain(ctx context.Context, volumeID, datas
 		// Extent doesn't exist - create it along with target and association
 		s.driver.Log().Info("iSCSI extent missing for existing ZVOL, completing iSCSI setup", "volumeId", volumeID, "zvolPath", zvolPath)
 
-		target, err := s.driver.Client().CreateISCSITargetWithAuth(ctx, targetSuffix, fmt.Sprintf("CSI volume %s", volumeID), 0, 0)
+		target, err := s.driver.Client().CreateISCSITargetWithAuth(ctx, targetSuffix, fmt.Sprintf("CSI volume %s", volumeID), 0, 0, s.driver.ISCSIPortal())
 		if err != nil {
 			// Target may already exist from a partial creation
 			target, err = s.driver.Client().GetISCSITargetByName(ctx, targetSuffix)
@@ -534,7 +534,7 @@ func (s *ControllerServer) ensureISCSIChain(ctx context.Context, volumeID, datas
 		// Find or create the target, then create the association.
 		s.driver.Log().Info("iSCSI target-extent association missing, completing setup", "volumeId", volumeID, "extentId", extent.ID)
 
-		target, tErr := s.driver.Client().CreateISCSITargetWithAuth(ctx, targetSuffix, fmt.Sprintf("CSI volume %s", volumeID), 0, 0)
+		target, tErr := s.driver.Client().CreateISCSITargetWithAuth(ctx, targetSuffix, fmt.Sprintf("CSI volume %s", volumeID), 0, 0, s.driver.ISCSIPortal())
 		if tErr != nil {
 			target, tErr = s.driver.Client().GetISCSITargetByName(ctx, targetSuffix)
 			if tErr != nil {
@@ -683,7 +683,7 @@ func (s *ControllerServer) createISCSIVolume(ctx context.Context, volumeID, data
 	iqnBase := s.driver.GetISCSIIQNBaseFromParameters(parameters)
 
 	targetSuffix := makeISCSITargetSuffix(volumeID)
-	target, err := s.driver.Client().CreateISCSITargetWithAuth(ctx, targetSuffix, fmt.Sprintf("CSI volume %s", volumeID), authTag, initiatorID)
+	target, err := s.driver.Client().CreateISCSITargetWithAuth(ctx, targetSuffix, fmt.Sprintf("CSI volume %s", volumeID), authTag, initiatorID, s.driver.ISCSIPortal())
 	if err != nil {
 		// Cleanup auth and initiator if created
 		if initiatorID > 0 {
@@ -1029,7 +1029,7 @@ func (s *ControllerServer) createISCSITargetForClone(ctx context.Context, volume
 	iqnBase := s.driver.GetISCSIIQNBaseFromParameters(parameters)
 
 	targetSuffix := makeISCSITargetSuffix(volumeID)
-	target, err := s.driver.Client().CreateISCSITarget(ctx, targetSuffix, fmt.Sprintf("CSI volume clone %s", volumeID))
+	target, err := s.driver.Client().CreateISCSITarget(ctx, targetSuffix, fmt.Sprintf("CSI volume clone %s", volumeID), s.driver.ISCSIPortal())
 	if err != nil {
 		return nil, err
 	}
