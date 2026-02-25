@@ -51,7 +51,8 @@ func TestBuildConnector_MultiplePortals(t *testing.T) {
 	cfg := &ISCSIConfig{
 		TargetIQN:        "iqn.2000-01.io.truenas:test",
 		LUN:              0,
-		MultipathEnabled: true,
+		MultipathEnabled: true, // note: csi-lib-iscsi has no Multipath bool field;
+		// multipath is detected at runtime via IsMultipathEnabled() on the device.
 	}
 	c := h.buildConnector("vol-1", cfg)
 	if len(c.TargetPortals) != 2 {

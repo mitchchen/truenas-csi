@@ -154,6 +154,8 @@ func (h *ISCSIHandler) Stage(ctx context.Context, req *StageRequest) (*StageResu
 		return nil, fmt.Errorf("failed to parse iSCSI config: %w (check publish context from controller)", err)
 	}
 
+	// TODO: once targetPortal is removed from publish context, replace this guard
+	// with len(h.portals) == 0 — buildConnector uses h.portals, not config.TargetPortal.
 	if config.TargetPortal == "" || config.TargetIQN == "" {
 		return nil, fmt.Errorf("iSCSI target portal and IQN are required (check StorageClass parameters and controller publish context)")
 	}
