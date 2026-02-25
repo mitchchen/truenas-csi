@@ -30,3 +30,34 @@ func TestISCSIPortals_Empty(t *testing.T) {
 		t.Fatalf("ISCSIPortal() on empty slice = %q, want empty string", got)
 	}
 }
+
+func TestBuildConnector_SinglePortal(t *testing.T) {
+	h := &ISCSIHandler{portals: []string{"10.0.0.1:3260"}}
+	cfg := &ISCSIConfig{
+		TargetIQN: "iqn.2000-01.io.truenas:test",
+		LUN:       0,
+	}
+	c := h.buildConnector("vol-1", cfg)
+	if len(c.TargetPortals) != 1 || c.TargetPortals[0] != "10.0.0.1:3260" {
+		t.Fatalf("TargetPortals = %v, want [10.0.0.1:3260]", c.TargetPortals)
+	}
+	if c.DoCHAPDiscovery {
+		t.Fatal("DoCHAPDiscovery should be false when MultipathEnabled is false")
+	}
+}
+
+func TestBuildConnector_MultiplePortals(t *testing.T) {
+	h := &ISCSIHandler{portals: []string{"10.0.0.1:3260", "10.0.0.2:3260"}}
+	cfg := &ISCSIConfig{
+		TargetIQN:        "iqn.2000-01.io.truenas:test",
+		LUN:              0,
+		MultipathEnabled: true,
+	}
+	c := h.buildConnector("vol-1", cfg)
+	if len(c.TargetPortals) != 2 {
+		t.Fatalf("TargetPortals = %v, want 2 portals", c.TargetPortals)
+	}
+	if c.TargetPortals[0] != "10.0.0.1:3260" || c.TargetPortals[1] != "10.0.0.2:3260" {
+		t.Fatalf("TargetPortals = %v, want [10.0.0.1:3260 10.0.0.2:3260]", c.TargetPortals)
+	}
+}

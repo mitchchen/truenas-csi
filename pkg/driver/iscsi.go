@@ -37,6 +37,7 @@ type ISCSIHandler struct {
 	mounter *mount.SafeFormatAndMount
 	resizer *mount.ResizeFs
 	log     logr.Logger
+	portals []string
 }
 
 // ISCSIConfig holds iSCSI-specific configuration parsed from volume/publish contexts
@@ -53,7 +54,7 @@ type ISCSIConfig struct {
 }
 
 // NewISCSIHandler creates a new iSCSI protocol handler
-func NewISCSIHandler(mounter *mount.SafeFormatAndMount, log logr.Logger) (*ISCSIHandler, error) {
+func NewISCSIHandler(mounter *mount.SafeFormatAndMount, log logr.Logger, portals []string) (*ISCSIHandler, error) {
 	// Ensure connector directory exists
 	if err := os.MkdirAll(connectorDir, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create connector directory %s: %w", connectorDir, err)
@@ -63,6 +64,7 @@ func NewISCSIHandler(mounter *mount.SafeFormatAndMount, log logr.Logger) (*ISCSI
 		mounter: mounter,
 		resizer: mount.NewResizeFs(mounter.Exec),
 		log:     log,
+		portals: portals,
 	}, nil
 }
 
@@ -114,7 +116,7 @@ func (h *ISCSIHandler) buildConnector(volumeID string, config *ISCSIConfig) *isc
 	connector := &iscsilib.Connector{
 		VolumeName:    volumeID,
 		TargetIqn:     config.TargetIQN,
-		TargetPortals: []string{config.TargetPortal},
+		TargetPortals: h.portals,
 		Lun:           config.LUN,
 		RetryCount:    iscsiRetryCount,
 		CheckInterval: iscsiCheckInterval,
@@ -131,6 +133,12 @@ func (h *ISCSIHandler) buildConnector(volumeID string, config *ISCSIConfig) *isc
 			PasswordIn: config.CHAPPasswordIn,
 		}
 		connector.SessionSecrets = connector.DiscoverySecrets
+	}
+
+	// When persistent sessions are requested, let iscsid manage reconnect
+	// by disabling CHAP discovery (which would interfere with session restore)
+	if config.PersistentSessions {
+		connector.DoCHAPDiscovery = false
 	}
 
 	return connector

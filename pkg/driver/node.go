@@ -47,7 +47,7 @@ func NewNodeServer(cfg *NodeServerConfig) (*NodeServer, error) {
 		Exec:      exec.New(),
 	}
 
-	iscsiHandler, err := NewISCSIHandler(safeMounter, cfg.Driver.Log())
+	iscsiHandler, err := NewISCSIHandler(safeMounter, cfg.Driver.Log(), cfg.Driver.ISCSIPortals())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create iSCSI handler: %w", err)
 	}
