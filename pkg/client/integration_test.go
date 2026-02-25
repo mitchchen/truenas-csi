@@ -390,7 +390,7 @@ func TestIntegration_ISCSIFullWorkflow(t *testing.T) {
 
 	// Create Target
 	t.Run("CreateTarget", func(t *testing.T) {
-		target, err := client.CreateISCSITarget(ctx, targetName, "test-alias")
+		target, err := client.CreateISCSITarget(ctx, targetName, "test-alias", os.Getenv("TRUENAS_ISCSI_PORTAL"))
 		if err != nil {
 			t.Fatalf("CreateISCSITarget failed: %v", err)
 		}
