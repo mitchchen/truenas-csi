@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/truenas/truenas-csi/pkg/driver"
@@ -123,7 +124,12 @@ func loadEnvConfig(config *driver.DriverConfig) error {
 	}
 
 	if val := os.Getenv("TRUENAS_ISCSI_PORTAL"); val != "" {
-		config.ISCSIPortal = val
+		for _, p := range strings.Split(val, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				config.ISCSIPortals = append(config.ISCSIPortals, p)
+			}
+		}
 	}
 
 	if val := os.Getenv("TRUENAS_ISCSI_IQN_BASE"); val != "" {

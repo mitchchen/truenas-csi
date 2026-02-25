@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -174,6 +175,16 @@ func buildTestConfig(endpoint string) *driver.DriverConfig {
 		pool = defaultTestPool
 	}
 
+	var iscsiPortals []string
+	if val := os.Getenv("TRUENAS_ISCSI_PORTAL"); val != "" {
+		for _, p := range strings.Split(val, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				iscsiPortals = append(iscsiPortals, p)
+			}
+		}
+	}
+
 	config := &driver.DriverConfig{
 		NodeID:        "sanity-test-node",
 		Endpoint:      "unix://" + endpoint,
@@ -181,7 +192,7 @@ func buildTestConfig(endpoint string) *driver.DriverConfig {
 		TrueNASAPIKey: os.Getenv("TRUENAS_API_KEY"),
 		DefaultPool:   pool,
 		NFSServer:     os.Getenv("TRUENAS_NFS_SERVER"),
-		ISCSIPortal:   os.Getenv("TRUENAS_ISCSI_PORTAL"),
+		ISCSIPortals:  iscsiPortals,
 		ISCSIIQNBase:  os.Getenv("TRUENAS_ISCSI_IQN_BASE"),
 		Logger:        textlogger.NewLogger(textlogger.NewConfig()),
 	}
