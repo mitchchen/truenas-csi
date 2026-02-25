@@ -30,7 +30,7 @@ const (
 //   - TRUENAS_API_KEY: API key for authentication
 //   - TRUENAS_DEFAULT_POOL: Storage pool to use (default: tank)
 //   - TRUENAS_NFS_SERVER: NFS server IP/hostname
-//   - TRUENAS_ISCSI_PORTAL: iSCSI portal (e.g., 10.0.0.1:3260)
+//   - TRUENAS_ISCSI_PORTAL: iSCSI portal(s), comma-separated (e.g., 10.0.0.1:3260 or 10.0.0.1:3260,10.0.0.2:3260)
 //
 // Optional environment variables:
 //   - TRUENAS_INSECURE_SKIP_VERIFY: Set to "true" for self-signed certs
