@@ -8,6 +8,7 @@ set -e
 CLUSTER_NAME="${KIND_CLUSTER_NAME:-truenas-csi-demo}"
 NAMESPACE="truenas-csi"
 DEMO_NAMESPACE="demo"
+TRUENAS_POOL="tank"
 
 # Colors for output
 RED='\033[0;31m'
@@ -1552,6 +1553,450 @@ EOF
     read -p "Press Enter to continue..."
 }
 
+# Demo: NFS Write Performance Benchmark
+demo_nfs_write_benchmark() {
+    print_header "Demo: NFS Write Performance Benchmark"
+
+    # Benchmarks mount the NFS share directly on this host — no pod needed.
+
+    # ── Select PVC ────────────────────────────────────────────────────────────
+    NFS_PVCS=$(kubectl get pvc -n ${DEMO_NAMESPACE} \
+        -o jsonpath='{range .items[?(@.spec.storageClassName=="truenas-nfs")]}{.metadata.name}{" "}{end}' \
+        2>/dev/null)
+
+    if [ -z "$NFS_PVCS" ]; then
+        print_warning "No NFS PVCs found in the demo namespace!"
+        echo ""
+        echo "Please create an NFS volume first using option 1."
+        echo ""
+        read -p "Press Enter to return to main menu..."
+        return
+    fi
+
+    PVC_ARRAY=($NFS_PVCS)
+
+    if [ ${#PVC_ARRAY[@]} -eq 1 ]; then
+        SELECTED_PVC="${PVC_ARRAY[0]}"
+        PVC_SIZE=$(kubectl get pvc -n ${DEMO_NAMESPACE} $SELECTED_PVC -o jsonpath='{.status.capacity.storage}')
+        print_info "Using NFS volume: $SELECTED_PVC (${PVC_SIZE})"
+    else
+        echo "Available NFS volumes:"
+        echo ""
+        for i in "${!PVC_ARRAY[@]}"; do
+            PVC_NAME="${PVC_ARRAY[$i]}"
+            PVC_SIZE=$(kubectl get pvc -n ${DEMO_NAMESPACE} $PVC_NAME -o jsonpath='{.status.capacity.storage}')
+            echo "  $((i+1))) $PVC_NAME - ${PVC_SIZE}"
+        done
+        echo ""
+        read -p "Select volume [1-${#PVC_ARRAY[@]}]: " CHOICE
+
+        if ! [[ "$CHOICE" =~ ^[0-9]+$ ]] || [ "$CHOICE" -lt 1 ] || [ "$CHOICE" -gt "${#PVC_ARRAY[@]}" ]; then
+            print_error "Invalid selection"
+            read -p "Press Enter to continue..."
+            return
+        fi
+        SELECTED_PVC="${PVC_ARRAY[$((CHOICE-1))]}"
+    fi
+    echo ""
+
+    read -p "Number of write iterations [default: 5]: " ITERATIONS
+    ITERATIONS="${ITERATIONS:-5}"
+    if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]] || [ "$ITERATIONS" -lt 1 ]; then
+        print_warning "Invalid input, using 5 iterations"
+        ITERATIONS=5
+    fi
+
+    # ── Prerequisites ─────────────────────────────────────────────────────────
+    if ! command -v mount &>/dev/null; then
+        print_error "mount command not found"
+        read -p "Press Enter to continue..."
+        return
+    fi
+
+    # ── Read NFS info from PV ─────────────────────────────────────────────────
+    print_step "1. Reading NFS target info from PersistentVolume"
+
+    PV_NAME=$(kubectl get pvc -n ${DEMO_NAMESPACE} $SELECTED_PVC -o jsonpath='{.spec.volumeName}')
+    if [ -z "$PV_NAME" ]; then
+        print_error "Could not determine PV name for $SELECTED_PVC"
+        read -p "Press Enter to continue..."
+        return
+    fi
+
+    NFS_SERVER=$(kubectl get pv $PV_NAME -o jsonpath='{.spec.csi.volumeAttributes.nfsServer}')
+    NFS_PATH=$(kubectl get pv   $PV_NAME -o jsonpath='{.spec.csi.volumeAttributes.nfsPath}')
+
+    if [ -z "$NFS_SERVER" ] || [ -z "$NFS_PATH" ]; then
+        print_error "Could not read NFS server/path from PV $PV_NAME"
+        echo ""
+        print_info "PV volume attributes:"
+        kubectl get pv $PV_NAME -o jsonpath='{.spec.csi.volumeAttributes}' \
+            | python3 -m json.tool 2>/dev/null \
+            || kubectl get pv $PV_NAME -o jsonpath='{.spec.csi.volumeAttributes}'
+        echo ""
+        read -p "Press Enter to continue..."
+        return
+    fi
+
+    print_info "Server: $NFS_SERVER"
+    print_info "Path:   $NFS_PATH"
+    echo ""
+
+    # ── Mount ─────────────────────────────────────────────────────────────────
+    print_step "2. Mounting NFS share"
+
+    MOUNT_DIR=$(mktemp -d /tmp/truenas-bench-XXXXXX)
+
+    set +e
+    MOUNT_OUT=$(timeout 30 mount -t nfs "$NFS_SERVER:$NFS_PATH" "$MOUNT_DIR" 2>&1)
+    MOUNT_RC=$?
+    set -e
+
+    if [ $MOUNT_RC -ne 0 ]; then
+        [ $MOUNT_RC -eq 124 ] \
+            && print_error "NFS mount timed out after 30s" \
+            || print_error "NFS mount failed (exit $MOUNT_RC)"
+        echo ""
+        echo "$MOUNT_OUT"
+        rmdir "$MOUNT_DIR" 2>/dev/null || true
+        echo ""
+
+        echo -e "${CYAN}Running diagnostics...${NC}"
+        echo ""
+
+        printf "  %-30s " "Ping $NFS_SERVER:"
+        set +e; ping -c1 -W2 "$NFS_SERVER" &>/dev/null; PING_RC=$?; set -e
+        [ $PING_RC -eq 0 ] && echo -e "${GREEN}reachable${NC}" || echo -e "${RED}unreachable${NC}"
+
+        printf "  %-30s " "NFS port 2049:"
+        set +e; nc -zw3 "$NFS_SERVER" 2049 &>/dev/null; NC_RC=$?; set -e
+        [ $NC_RC -eq 0 ] && echo -e "${GREEN}open${NC}" || echo -e "${RED}closed/filtered${NC}"
+
+        echo ""
+        echo "If access is denied, check that this host's IP is in the NFS export"
+        echo "network list on TrueNAS (Shares → NFS → Edit share → Networks)."
+
+        read -p "Press Enter to continue..."
+        return
+    fi
+
+    print_success "Mounted at $MOUNT_DIR"
+    echo ""
+
+    # ── Benchmark ─────────────────────────────────────────────────────────────
+    print_step "3. Running $ITERATIONS timed write iterations (256 MB each, conv=fsync)"
+    echo ""
+    printf "  %-12s %-14s %-12s\n" "Iteration" "Elapsed (s)" "Throughput"
+    printf "  %-12s %-14s %-12s\n" "---------" "-----------" "----------"
+
+    for i in $(seq 1 $ITERATIONS); do
+        set +e
+        STATS=$(dd if=/dev/zero of="$MOUNT_DIR/bench.dat" bs=4M count=64 conv=fsync 2>&1 \
+            | grep -E "bytes.*copied" | tail -1)
+        set -e
+        ELAPSED=$(echo    "$STATS" | sed 's/.*copied,[ ]*\([0-9.]*\)[ ]*s.*/\1/')
+        THROUGHPUT=$(echo "$STATS" | grep -oE '[0-9]+\.?[0-9]* [GMk]B/s' | head -1)
+        printf "  %-12s %-14s %-12s\n" "$i" "${ELAPSED:-N/A}" "${THROUGHPUT:-N/A}"
+    done
+
+    echo ""
+    print_success "Benchmark complete!"
+    echo ""
+    echo -e "${BOLD}Configuration:${NC}"
+    echo "  Volume:     ${SELECTED_PVC} (${NFS_SERVER}:${NFS_PATH})"
+    echo "  Write size: 256 MB per iteration (64 × 4 MB blocks)"
+    echo "  Sync mode:  conv=fsync (flushed to server after write)"
+    echo ""
+    echo -e "${CYAN}Note:${NC} Results reflect NFS network + TrueNAS ZFS write latency"
+    echo ""
+
+    # ── Unmount ───────────────────────────────────────────────────────────────
+    print_step "4. Unmounting"
+    set +e
+    rm -f "$MOUNT_DIR/bench.dat"
+    umount "$MOUNT_DIR"
+    UMOUNT_RC=$?
+    set -e
+    rmdir "$MOUNT_DIR" 2>/dev/null || true
+    [ $UMOUNT_RC -eq 0 ] \
+        && print_success "Unmounted" \
+        || print_warning "Unmount failed — run manually: sudo umount $MOUNT_DIR"
+
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+# Demo: iSCSI Write Performance Benchmark
+demo_iscsi_write_benchmark() {
+    print_header "Demo: iSCSI Write Performance Benchmark"
+
+    # Benchmarks connect directly via iscsiadm on this host — no pod mount needed.
+
+    # ── Select PVC ────────────────────────────────────────────────────────────
+    ISCSI_PVCS=$(kubectl get pvc -n ${DEMO_NAMESPACE} \
+        -o jsonpath='{range .items[?(@.spec.storageClassName=="truenas-iscsi")]}{.metadata.name}{" "}{end}' \
+        2>/dev/null)
+
+    if [ -z "$ISCSI_PVCS" ]; then
+        print_warning "No iSCSI PVCs found in the demo namespace!"
+        echo ""
+        echo "Please create an iSCSI volume first using option 2."
+        echo ""
+        read -p "Press Enter to return to main menu..."
+        return
+    fi
+
+    PVC_ARRAY=($ISCSI_PVCS)
+
+    if [ ${#PVC_ARRAY[@]} -eq 1 ]; then
+        SELECTED_PVC="${PVC_ARRAY[0]}"
+        PVC_SIZE=$(kubectl get pvc -n ${DEMO_NAMESPACE} $SELECTED_PVC -o jsonpath='{.status.capacity.storage}')
+        print_info "Using iSCSI volume: $SELECTED_PVC (${PVC_SIZE})"
+    else
+        echo "Available iSCSI volumes:"
+        echo ""
+        for i in "${!PVC_ARRAY[@]}"; do
+            PVC_NAME="${PVC_ARRAY[$i]}"
+            PVC_SIZE=$(kubectl get pvc -n ${DEMO_NAMESPACE} $PVC_NAME -o jsonpath='{.status.capacity.storage}')
+            echo "  $((i+1))) $PVC_NAME - ${PVC_SIZE}"
+        done
+        echo ""
+        read -p "Select volume [1-${#PVC_ARRAY[@]}]: " CHOICE
+
+        if ! [[ "$CHOICE" =~ ^[0-9]+$ ]] || [ "$CHOICE" -lt 1 ] || [ "$CHOICE" -gt "${#PVC_ARRAY[@]}" ]; then
+            print_error "Invalid selection"
+            read -p "Press Enter to continue..."
+            return
+        fi
+        SELECTED_PVC="${PVC_ARRAY[$((CHOICE-1))]}"
+    fi
+    echo ""
+
+    read -p "Number of write iterations [default: 5]: " ITERATIONS
+    ITERATIONS="${ITERATIONS:-5}"
+    if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]] || [ "$ITERATIONS" -lt 1 ]; then
+        print_warning "Invalid input, using 5 iterations"
+        ITERATIONS=5
+    fi
+
+    # ── Prerequisites ─────────────────────────────────────────────────────────
+    if ! command -v iscsiadm &>/dev/null; then
+        print_error "iscsiadm not found on this host"
+        echo ""
+        echo "Install with:"
+        echo "  Debian/Ubuntu: sudo apt-get install open-iscsi"
+        echo "  RHEL/CentOS:   sudo yum install iscsi-initiator-utils"
+        echo ""
+        read -p "Press Enter to continue..."
+        return
+    fi
+
+    # ── Read target info from the PV ──────────────────────────────────────────
+    print_step "1. Reading iSCSI target info from PersistentVolume"
+
+    PV_NAME=$(kubectl get pvc -n ${DEMO_NAMESPACE} $SELECTED_PVC -o jsonpath='{.spec.volumeName}')
+    if [ -z "$PV_NAME" ]; then
+        print_error "Could not determine PV name for $SELECTED_PVC"
+        read -p "Press Enter to continue..."
+        return
+    fi
+
+    TARGET_PORTAL=$(kubectl get pv $PV_NAME -o jsonpath='{.spec.csi.volumeAttributes.targetPortal}')
+    TARGET_IQN=$(kubectl get pv $PV_NAME    -o jsonpath='{.spec.csi.volumeAttributes.targetIQN}')
+    LUN=$(kubectl get pv $PV_NAME           -o jsonpath='{.spec.csi.volumeAttributes.lun}')
+    LUN="${LUN:-0}"
+
+    if [ -z "$TARGET_PORTAL" ] || [ -z "$TARGET_IQN" ]; then
+        print_error "Could not read iSCSI target info from PV $PV_NAME"
+        echo ""
+        print_info "PV volume attributes:"
+        kubectl get pv $PV_NAME -o jsonpath='{.spec.csi.volumeAttributes}' \
+            | python3 -m json.tool 2>/dev/null \
+            || kubectl get pv $PV_NAME -o jsonpath='{.spec.csi.volumeAttributes}'
+        echo ""
+        read -p "Press Enter to continue..."
+        return
+    fi
+
+    print_info "Portal:  $TARGET_PORTAL"
+    print_info "IQN:     $TARGET_IQN"
+    print_info "LUN:     $LUN"
+    echo ""
+
+    # ── Connect ───────────────────────────────────────────────────────────────
+    print_step "2. Connecting to iSCSI target"
+
+    print_info "Discovering targets at $TARGET_PORTAL..."
+    set +e
+    DISCOVERY_OUT=$(timeout 30 iscsiadm -m discovery -t sendtargets -p "$TARGET_PORTAL" 2>&1)
+    DISCOVERY_RC=$?
+    set -e
+    if [ $DISCOVERY_RC -ne 0 ]; then
+        [ $DISCOVERY_RC -eq 124 ] \
+            && print_error "iSCSI discovery timed out after 30s" \
+            || print_error "iSCSI discovery failed (exit $DISCOVERY_RC)"
+        [ -n "$DISCOVERY_OUT" ] && { echo ""; echo "$DISCOVERY_OUT"; }
+        echo ""
+
+        echo -e "${CYAN}Running diagnostics...${NC}"
+        echo ""
+        printf "  %-30s " "Ping ${TARGET_PORTAL%%:*}:"
+        set +e; ping -c1 -W2 "${TARGET_PORTAL%%:*}" &>/dev/null; PING_RC=$?; set -e
+        [ $PING_RC -eq 0 ] && echo -e "${GREEN}reachable${NC}" || echo -e "${RED}unreachable${NC}"
+
+        printf "  %-30s " "TCP port ${TARGET_PORTAL##*:}:"
+        set +e; nc -zw3 "${TARGET_PORTAL%%:*}" "${TARGET_PORTAL##*:}" &>/dev/null; NC_RC=$?; set -e
+        [ $NC_RC -eq 0 ] && echo -e "${GREEN}open${NC}" || echo -e "${RED}closed/filtered${NC}"
+
+        printf "  %-30s " "iscsid service:"
+        set +e; systemctl is-active iscsid &>/dev/null; ISCSID_RC=$?; set -e
+        [ $ISCSID_RC -eq 0 ] && echo -e "${GREEN}running${NC}" || echo -e "${RED}not running${NC}"
+
+        read -p "Press Enter to continue..."
+        return
+    fi
+    print_success "Discovery succeeded"
+
+    # The target may not appear in sendtargets if the initiator group restricts
+    # visibility.  Explicitly create the node record so login can proceed.
+    set +e
+    iscsiadm -m node -T "$TARGET_IQN" -p "$TARGET_PORTAL" -o new &>/dev/null
+    set -e
+
+    print_info "Logging in to $TARGET_IQN..."
+    set +e
+    LOGIN_OUT=$(timeout 60 iscsiadm -m node -T "$TARGET_IQN" -p "$TARGET_PORTAL" --login 2>&1)
+    LOGIN_RC=$?
+    set -e
+    # rc=0 = logged in, rc=15 = already logged in — both fine
+    LOCAL_IQN=$(grep -m1 '^InitiatorName=' /etc/iscsi/initiatorname.iscsi 2>/dev/null | cut -d= -f2)
+
+    if [ $LOGIN_RC -ne 0 ] && [ $LOGIN_RC -ne 15 ]; then
+        if [ $LOGIN_RC -eq 124 ]; then
+            print_error "iSCSI login timed out after 60s"
+            echo ""
+            echo "Port 3260 is open but TrueNAS did not complete the login."
+            echo "Things to check in TrueNAS (Shares → iSCSI):"
+            echo "  - Portal is bound to 0.0.0.0 (not just the pod/cluster interface)"
+            echo "  - No per-target CHAP is configured"
+        elif [ $LOGIN_RC -eq 19 ]; then
+            print_error "iSCSI login rejected by target (exit 19 — non-retryable login failure)"
+            echo ""
+            echo "The CSI driver created this target without an initiator group, so"
+            echo "TrueNAS denies all connections to it. New volumes will work correctly"
+            echo "after the driver is rebuilt, but this existing target needs a manual fix."
+            echo ""
+            echo "Fix in TrueNAS (Shares → iSCSI → Targets):"
+            echo "  1. Find and edit the target whose name contains:"
+            echo "       $(echo $TARGET_IQN | sed 's/.*://')"
+            echo "  2. In the Target Groups section, set Initiator Group → All Initiators"
+            echo "  3. Save, then retry this benchmark"
+        else
+            print_error "iSCSI login failed (exit $LOGIN_RC)"
+            echo "$LOGIN_OUT"
+        fi
+        [ -n "$LOCAL_IQN" ] && echo "" && print_info "Local initiator IQN: $LOCAL_IQN"
+        iscsiadm -m node -T "$TARGET_IQN" -p "$TARGET_PORTAL" --op delete &>/dev/null || true
+        read -p "Press Enter to continue..."
+        return
+    fi
+    # Also log in to any additional portals discovered for this target so that
+    # dm-multipath can see all paths.
+    set +e
+    iscsiadm -m node -T "$TARGET_IQN" --loginall all &>/dev/null
+    set -e
+    print_success "Logged in to all available portals"
+    sleep 3
+
+    # ── Find block device ─────────────────────────────────────────────────────
+    BLOCK_DEV=""
+
+    for dev_path in /dev/disk/by-path/*"${TARGET_IQN}"*"lun-${LUN}"*; do
+        if [ -e "$dev_path" ]; then
+            BLOCK_DEV=$(readlink -f "$dev_path")
+            break
+        fi
+    done
+
+    if [ -z "$BLOCK_DEV" ]; then
+        set +e
+        SESSION_DEV=$(iscsiadm -m session -P 3 2>/dev/null \
+            | grep -A 5 "$TARGET_IQN" \
+            | grep "Attached scsi disk" \
+            | awk '{print $4}' | head -1)
+        set -e
+        [ -n "$SESSION_DEV" ] && BLOCK_DEV="/dev/$SESSION_DEV"
+    fi
+
+    if [ -z "$BLOCK_DEV" ] || [ ! -b "$BLOCK_DEV" ]; then
+        print_error "Could not find block device for LUN $LUN"
+        echo ""
+        print_info "Active sessions:"
+        iscsiadm -m session 2>/dev/null || echo "(none)"
+        iscsiadm -m node -T "$TARGET_IQN" --logoutall all &>/dev/null || true
+        iscsiadm -m node -T "$TARGET_IQN" --op delete      &>/dev/null || true
+        read -p "Press Enter to continue..."
+        return
+    fi
+
+    # ── Check for multipath device ────────────────────────────────────────────
+    DEV_NAME=$(basename "$BLOCK_DEV")
+    MPATH_HOLDER=$(ls /sys/block/"$DEV_NAME"/holders/ 2>/dev/null | grep '^dm-' | head -1)
+
+    if [ -n "$MPATH_HOLDER" ] && [ -b "/dev/$MPATH_HOLDER" ]; then
+        MPATH_DEV="/dev/$MPATH_HOLDER"
+        PATH_COUNT=$(ls /sys/block/"$MPATH_HOLDER"/slaves/ 2>/dev/null | wc -l)
+        MPATH_NAME=$(cat /sys/block/"$MPATH_HOLDER"/dm/name 2>/dev/null || echo "$MPATH_HOLDER")
+        print_success "Multipath device: /dev/mapper/$MPATH_NAME ($PATH_COUNT paths, raw: $BLOCK_DEV)"
+        BLOCK_DEV="/dev/mapper/$MPATH_NAME"
+    else
+        print_success "Block device: $BLOCK_DEV"
+        if command -v multipathd &>/dev/null; then
+            print_warning "No multipath device found — multipathd is running but only one path is active"
+        fi
+    fi
+    echo ""
+
+    # ── Benchmark ─────────────────────────────────────────────────────────────
+    print_step "3. Running $ITERATIONS timed write iterations (256 MB each, oflag=direct)"
+    echo ""
+    printf "  %-12s %-14s %-12s\n" "Iteration" "Elapsed (s)" "Throughput"
+    printf "  %-12s %-14s %-12s\n" "---------" "-----------" "----------"
+
+    for i in $(seq 1 $ITERATIONS); do
+        set +e
+        STATS=$(dd if=/dev/zero of="$BLOCK_DEV" bs=4M count=64 oflag=direct 2>&1 \
+            | grep -E "bytes.*copied" | tail -1)
+        set -e
+        ELAPSED=$(echo    "$STATS" | sed 's/.*copied,[ ]*\([0-9.]*\)[ ]*s.*/\1/')
+        THROUGHPUT=$(echo "$STATS" | grep -oE '[0-9]+\.?[0-9]* [GMk]B/s' | head -1)
+        printf "  %-12s %-14s %-12s\n" "$i" "${ELAPSED:-N/A}" "${THROUGHPUT:-N/A}"
+        echo ${STATS}
+    done
+
+    echo ""
+    print_success "Benchmark complete!"
+    echo ""
+    echo -e "${BOLD}Configuration:${NC}"
+    echo "  Volume:  ${SELECTED_PVC}"
+    echo "  Device:  ${BLOCK_DEV}"
+    echo "  Target:  ${TARGET_IQN}"
+    echo "  Writes:  256 MB per iteration (64 × 4 MB, oflag=direct)"
+    echo ""
+    echo -e "${CYAN}Note:${NC} Results reflect raw iSCSI network + TrueNAS ZFS write latency"
+    echo ""
+
+    # ── Disconnect ────────────────────────────────────────────────────────────
+    print_step "4. Disconnecting"
+    iscsiadm -m node -T "$TARGET_IQN" --logoutall all &>/dev/null \
+        && print_success "Logged out of all portals" \
+        || print_warning "Logout may have failed (check: iscsiadm -m session)"
+    iscsiadm -m node -T "$TARGET_IQN" --op delete &>/dev/null || true
+
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
 # Cleanup demo resources
 cleanup() {
     print_header "Cleanup Demo Resources"
@@ -1580,7 +2025,6 @@ cleanup() {
 # Main menu
 main_menu() {
     while true; do
-        clear
         print_header "TrueNAS CSI Driver - Simplified Demo"
 
         # echo -e "${BOLD}This demo shows CSI driver features WITHOUT pod mounting${NC}"
@@ -1608,6 +2052,10 @@ main_menu() {
         echo " 13) Show current status"
         echo " 14) View driver logs"
         echo " 15) Cleanup demo resources"
+        echo ""
+        echo -e "${CYAN}Performance:${NC}"
+        echo " 16) Benchmark iSCSI write throughput (repeated timed writes)"
+        echo " 17) Benchmark NFS write throughput (repeated timed writes)"
         echo "  0) Exit"
         echo ""
         read -p "Choose option: " OPTION
@@ -1628,6 +2076,8 @@ main_menu() {
             13) show_status; read -p "Press Enter to continue..." ;;
             14) view_logs ;;
             15) cleanup ;;
+            16) demo_iscsi_write_benchmark ;;
+            17) demo_nfs_write_benchmark ;;
             0)
                 print_info "Exiting..."
                 exit 0

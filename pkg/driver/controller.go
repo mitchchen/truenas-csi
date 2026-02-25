@@ -243,8 +243,15 @@ func (s *ControllerServer) createISCSIVolume(ctx context.Context, volumeID, data
 		return nil, fmt.Errorf("failed to create ZVOL: %w", err)
 	}
 
-	// Get IQN base (can be overridden per StorageClass)
+	// Get IQN base: prefer StorageClass override, then auto-detect from TrueNAS,
+	// then fall back to the driver-level default.
 	iqnBase := s.driver.getISCSIIQNBaseFromParameters(parameters)
+	if iqnBase == s.driver.iscsiIQNBase {
+		// No per-StorageClass override — try to read the real basename from TrueNAS
+		if detected, err := s.driver.client.GetISCSIBasename(ctx); err == nil {
+			iqnBase = detected
+		}
+	}
 
 	targetSuffix := fmt.Sprintf("csi-%s", strings.ReplaceAll(volumeID, "/", "-"))
 	target, err := s.driver.client.CreateISCSITarget(ctx, targetSuffix, fmt.Sprintf("CSI volume %s", volumeID))
@@ -514,8 +521,12 @@ func (s *ControllerServer) createNFSShareForClone(ctx context.Context, volumeID,
 }
 
 func (s *ControllerServer) createISCSITargetForClone(ctx context.Context, volumeID, datasetPath string, capacityBytes int64, parameters map[string]string) (*VolumeInfo, error) {
-	// Get IQN base (can be overridden per StorageClass)
 	iqnBase := s.driver.getISCSIIQNBaseFromParameters(parameters)
+	if iqnBase == s.driver.iscsiIQNBase {
+		if detected, err := s.driver.client.GetISCSIBasename(ctx); err == nil {
+			iqnBase = detected
+		}
+	}
 
 	// Replace slash in volumeID for valid iSCSI target name
 	targetSuffix := fmt.Sprintf("csi-%s", strings.ReplaceAll(volumeID, "/", "-"))

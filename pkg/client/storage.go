@@ -29,6 +29,9 @@ const (
 	DELETE_ISCSI_TARGET_EXTENT string = "iscsi.targetextent.delete"
 	DELETE_ISCSI_TARGET        string = "iscsi.target.delete"
 	DELETE_ISCSI_EXTENT        string = "iscsi.extent.delete"
+	QUERY_ISCSI_INITIATOR      string = "iscsi.initiator.query"
+	CREATE_ISCSI_INITIATOR     string = "iscsi.initiator.create"
+	GET_ISCSI_GLOBAL_CONFIG    string = "iscsi.global.config"
 )
 
 const (
@@ -441,21 +444,72 @@ func (c *Client) DeleteNFSShare(ctx context.Context, id int) error {
 	return nil
 }
 
+type ISCSIGlobalConfig struct {
+	Basename string `json:"basename"`
+}
+
+// GetISCSIBasename returns the iSCSI IQN basename configured on TrueNAS
+// (e.g. "iqn.2005-10.org.freenas.ctl").
+func (c *Client) GetISCSIBasename(ctx context.Context) (string, error) {
+	var cfg ISCSIGlobalConfig
+	if err := c.Call(ctx, GET_ISCSI_GLOBAL_CONFIG, []any{}, &cfg); err != nil {
+		return "", fmt.Errorf("failed to get iSCSI global config: %w", err)
+	}
+	if cfg.Basename == "" {
+		return "", fmt.Errorf("TrueNAS returned empty iSCSI basename")
+	}
+	return cfg.Basename, nil
+}
+
+// GetOrCreateAllInitiatorsGroup returns the ID of an initiator group that
+// allows all initiators (empty Initiators list).  If none exists it creates one.
+func (c *Client) GetOrCreateAllInitiatorsGroup(ctx context.Context) (int, error) {
+	var groups []ISCSIInitiator
+	filters := [][]any{}
+	options := &QueryOptions{}
+	if err := c.Call(ctx, QUERY_ISCSI_INITIATOR, []any{filters, options}, &groups); err != nil {
+		return 0, fmt.Errorf("failed to list iSCSI initiator groups: %w", err)
+	}
+	for _, g := range groups {
+		if len(g.Initiators) == 0 {
+			return g.ID, nil
+		}
+	}
+	// None found — create one
+	params := &ISCSIInitiator{
+		Initiators: []string{},
+		Comment:    "Allow all initiators (created by TrueNAS CSI driver)",
+	}
+	var created ISCSIInitiator
+	if err := c.Call(ctx, CREATE_ISCSI_INITIATOR, []any{params}, &created); err != nil {
+		return 0, fmt.Errorf("failed to create iSCSI initiator group: %w", err)
+	}
+	if created.ID == 0 {
+		return 0, fmt.Errorf("TrueNAS returned initiator group with ID 0")
+	}
+	return created.ID, nil
+}
+
 func (c *Client) CreateISCSITarget(ctx context.Context, name, alias string) (*ISCSITarget, error) {
+	initiatorGroupID, err := c.GetOrCreateAllInitiatorsGroup(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	params := &ISCSITargetCreateOptions{
 		Name:  name,
 		Alias: alias,
 		Mode:  "ISCSI",
 		Groups: []ISCSITargetGroup{
 			{
-				Portal: 1, // Use default portal group (ID 1)
+				Portal:    1,
+				Initiator: initiatorGroupID,
 			},
 		},
 	}
 
 	var target ISCSITarget
-	err := c.Call(ctx, CREATE_ISCSI_TARGET, []any{params}, &target)
-	if err != nil {
+	if err := c.Call(ctx, CREATE_ISCSI_TARGET, []any{params}, &target); err != nil {
 		return nil, fmt.Errorf("failed to create iSCSI target: %w", err)
 	}
 	return &target, nil
