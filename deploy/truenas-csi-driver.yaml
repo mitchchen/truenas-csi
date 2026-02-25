@@ -161,7 +161,7 @@ data:
   truenasInsecure: "true"  # Set to "true" for self-signed certificates, "false" or remove for valid certs
   defaultPool: "tank"
   nfsServer: "YOUR-TRUENAS-IP"
-  iscsiPortal: "YOUR-TRUENAS-IP-1:3260,YOUR-TRUENAS-IP-2:3260"
+  iscsiPortal: "YOUR-TRUENAS-IP-1:3260,YOUR-TRUENAS-IP-2:3260"  # Comma-separated for HA; single portal also accepted
   iscsiIQNBase: "iqn.2000-01.io.truenas"  # Optional: Custom IQN prefix (default: iqn.2000-01.io.truenas)
 
 ---
@@ -374,6 +374,7 @@ spec:
                     if ! grep -q 'vendor.*TrueNAS' /host/etc/multipath/multipath.conf 2>/dev/null; then
                       mkdir -p /host/etc/multipath
                       printf '\ndevices {\n  device {\n    vendor            "TrueNAS"\n    product           "iSCSI Disk"\n    path_grouping_policy group_by_prio\n    prio              alua\n    path_checker      tur\n    hardware_handler  "1 alua"\n    failback          immediate\n    fast_io_fail_tmo  15\n  }\n}\n' >> /host/etc/multipath/multipath.conf
+                      nsenter --mount=/host/proc/1/ns/mnt -- multipathd reconfigure 2>/dev/null || true
                     fi
           securityContext:
             privileged: true
