@@ -118,6 +118,9 @@ func loadEnvConfig(config *driver.DriverConfig) error {
 	} else {
 		config.TrueNASAPIKey = val
 	}
+	if val := os.Getenv("TRUENAS_API_USERNAME"); val != "" {
+		config.TrueNASAPIUsername = val
+	}
 
 	if val := os.Getenv("TRUENAS_DEFAULT_POOL"); val == "" {
 		return fmt.Errorf("TRUENAS_DEFAULT_POOL is missing")

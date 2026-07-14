@@ -20,14 +20,14 @@ import (
 
 // Default configuration values
 const (
-	defaultCallTimeout         = 30 * time.Second
-	defaultPingInterval        = 30 * time.Second
-	defaultPingTimeout         = 10 * time.Second
-	defaultDialTimeout         = 30 * time.Second
-	defaultTLSHandshakeTimeout = 10 * time.Second
-	defaultReconnectMin        = 1 * time.Second
-	defaultReconnectMax        = 60 * time.Second
-	defaultReconnectFactor     = 2.0
+	defaultCallTimeout           = 30 * time.Second
+	defaultPingInterval          = 30 * time.Second
+	defaultPingTimeout           = 10 * time.Second
+	defaultDialTimeout           = 30 * time.Second
+	defaultTLSHandshakeTimeout   = 10 * time.Second
+	defaultReconnectMin          = 1 * time.Second
+	defaultReconnectMax          = 60 * time.Second
+	defaultReconnectFactor       = 2.0
 	defaultReconnectPollInterval = 100 * time.Millisecond
 	defaultMaxConcurrentCalls    = 4
 	jsonRPCVersion               = "2.0"
@@ -61,6 +61,7 @@ var (
 type Config struct {
 	URL                string
 	APIKey             string
+	APIUsername        string
 	TLSConfig          *tls.Config
 	InsecureSkipVerify bool
 	CallTimeout        time.Duration
@@ -309,10 +310,14 @@ func (c *Client) dial(ctx context.Context) error {
 	authCtx, authCancel := context.WithTimeout(ctx, c.config.CallTimeout)
 	defer authCancel()
 
+	authParams := []string{c.config.APIKey}
+	if c.config.APIUsername != "" {
+		authParams = []string{c.config.APIUsername, c.config.APIKey}
+	}
 	authReq := request{
 		ID:      c.nextID.Add(1),
 		Method:  "auth.login_with_api_key",
-		Params:  []string{c.config.APIKey},
+		Params:  authParams,
 		JSONRPC: jsonRPCVersion,
 	}
 

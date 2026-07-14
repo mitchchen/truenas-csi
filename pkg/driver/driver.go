@@ -263,9 +263,10 @@ type DriverConfig struct {
 	// Mode determines which services to run: "controller", "node", or "all"
 	Mode DriverMode
 
-	TrueNASURL      string
-	TrueNASAPIKey   string
-	TrueNASInsecure bool
+	TrueNASURL         string
+	TrueNASAPIKey      string
+	TrueNASAPIUsername string
+	TrueNASInsecure    bool
 
 	DefaultPool  string
 	NFSServer    string
@@ -356,6 +357,7 @@ func NewDriver(config *DriverConfig) (*Driver, error) {
 	cfg := client.Config{
 		URL:                config.TrueNASURL,
 		APIKey:             config.TrueNASAPIKey,
+		APIUsername:        config.TrueNASAPIUsername,
 		InsecureSkipVerify: config.TrueNASInsecure,
 		Logger:             config.Logger,
 	}
