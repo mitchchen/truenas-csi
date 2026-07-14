@@ -310,18 +310,26 @@ func (c *Client) dial(ctx context.Context) error {
 	authCtx, authCancel := context.WithTimeout(ctx, c.config.CallTimeout)
 	defer authCancel()
 
+	var authMethod string
 	var authParams []any
 	if c.config.APIUsername != "" {
-		authParams = []any{map[string]string{
-			"username": c.config.APIUsername,
-			"key":      c.config.APIKey,
+		// TrueNAS 26 introduced auth.login_ex. Its API_KEY_PLAIN payload is
+		// intentionally explicit about the username and key; the legacy
+		// auth.login_with_api_key method validates the v26 argument as a string
+		// and cannot accept the username alongside it.
+		authMethod = "auth.login_ex"
+		authParams = []any{map[string]any{
+			"mechanism": "API_KEY_PLAIN",
+			"username":  c.config.APIUsername,
+			"api_key":   c.config.APIKey,
 		}}
 	} else {
+		authMethod = "auth.login_with_api_key"
 		authParams = []any{c.config.APIKey}
 	}
 	authReq := request{
 		ID:      c.nextID.Add(1),
-		Method:  "auth.login_with_api_key",
+		Method:  authMethod,
 		Params:  authParams,
 		JSONRPC: jsonRPCVersion,
 	}
@@ -345,11 +353,22 @@ func (c *Client) dial(ctx context.Context) error {
 		return authResp.Error
 	}
 
-	var ok bool
-	if err = json.Unmarshal(authResp.Result, &ok); err != nil || !ok {
-		conn.Close(websocket.StatusNormalClosure, "")
-		c.log.Error(nil, "TrueNAS authentication rejected")
-		return ErrAuthFailed
+	if c.config.APIUsername != "" {
+		var authResult struct {
+			ResponseType string `json:"response_type"`
+		}
+		if err = json.Unmarshal(authResp.Result, &authResult); err != nil || authResult.ResponseType != "SUCCESS" {
+			conn.Close(websocket.StatusNormalClosure, "")
+			c.log.Error(nil, "TrueNAS authentication rejected")
+			return ErrAuthFailed
+		}
+	} else {
+		var ok bool
+		if err = json.Unmarshal(authResp.Result, &ok); err != nil || !ok {
+			conn.Close(websocket.StatusNormalClosure, "")
+			c.log.Error(nil, "TrueNAS authentication rejected")
+			return ErrAuthFailed
+		}
 	}
 
 	connDone := make(chan struct{})

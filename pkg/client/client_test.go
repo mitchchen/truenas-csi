@@ -24,6 +24,22 @@ func TestConnect_Success(t *testing.T) {
 	assertTrue(t, client.Connected())
 }
 
+func TestConnect_TrueNAS26APIKeyAuthentication(t *testing.T) {
+	mock := NewMockTrueNASServer()
+	defer mock.Close()
+
+	client := New(Config{
+		URL:         mock.URL,
+		APIKey:      "test-api-key",
+		APIUsername: "root",
+		CallTimeout: testTimeout,
+	})
+	defer client.Close()
+
+	assertNoError(t, client.Connect(testContext(t)))
+	assertTrue(t, client.Connected())
+}
+
 func TestConnect_InvalidURL(t *testing.T) {
 	client := New(Config{
 		URL:    "ws://invalid-host-that-does-not-exist:9999",

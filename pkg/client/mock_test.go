@@ -163,7 +163,7 @@ func (m *MockTrueNASServer) handleWebSocket(w http.ResponseWriter, r *http.Reque
 		}
 
 		// Record the request (except auth)
-		if req.Method != "auth.login_with_api_key" {
+		if req.Method != "auth.login_with_api_key" && req.Method != "auth.login_ex" {
 			m.mu.Lock()
 			paramsJSON, _ := json.Marshal(req.Params)
 			m.requests = append(m.requests, RecordedRequest{
@@ -209,6 +209,22 @@ func (m *MockTrueNASServer) generateResponse(req request) response {
 			}
 		}
 		resp.Result, _ = json.Marshal(false)
+		return resp
+	}
+	if req.Method == "auth.login_ex" {
+		var params []struct {
+			Mechanism string `json:"mechanism"`
+			Username  string `json:"username"`
+			APIKey    string `json:"api_key"`
+		}
+		if paramsBytes, err := json.Marshal(req.Params); err == nil {
+			if err := json.Unmarshal(paramsBytes, &params); err == nil && len(params) > 0 &&
+				params[0].Mechanism == "API_KEY_PLAIN" && params[0].Username == "root" && params[0].APIKey == m.apiKey {
+				resp.Result, _ = json.Marshal(map[string]string{"response_type": "SUCCESS"})
+				return resp
+			}
+		}
+		resp.Result, _ = json.Marshal(map[string]string{"response_type": "AUTH_ERR"})
 		return resp
 	}
 
