@@ -310,9 +310,14 @@ func (c *Client) dial(ctx context.Context) error {
 	authCtx, authCancel := context.WithTimeout(ctx, c.config.CallTimeout)
 	defer authCancel()
 
-	authParams := []string{c.config.APIKey}
+	var authParams []any
 	if c.config.APIUsername != "" {
-		authParams = []string{c.config.APIUsername, c.config.APIKey}
+		authParams = []any{map[string]string{
+			"username": c.config.APIUsername,
+			"key":      c.config.APIKey,
+		}}
+	} else {
+		authParams = []any{c.config.APIKey}
 	}
 	authReq := request{
 		ID:      c.nextID.Add(1),
