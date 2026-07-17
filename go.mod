@@ -34,3 +34,5 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/kubernetes-csi/csi-lib-iscsi => github.com/mitchchen/csi-lib-iscsi v0.0.0-20260717164542-5c6e7ccb5b7d
