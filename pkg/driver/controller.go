@@ -1704,7 +1704,11 @@ func (s *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolu
 	// disappears, which would otherwise make Kubernetes consider the volume
 	// deleted while leaving storage behind.  Verify the postcondition and retry
 	// within the CSI operation deadline.
-	const datasetDeleteAttempts = 3
+	// A TrueNAS 26 iSCSI target / extent teardown may leave the ZVOL busy for
+	// tens of seconds after the API accepts the delete. Keep retrying within the
+	// existing five-minute CSI operation deadline instead of abandoning a
+	// release-owned volume after the previous ~six-second window.
+	const datasetDeleteAttempts = 10
 	for attempt := 1; attempt <= datasetDeleteAttempts; attempt++ {
 		err = s.driver.Client().DeleteDataset(ctx, datasetPath, &client.DatasetDeleteOptions{Recursive: true, Force: true})
 		if err != nil && !client.IsNotFoundError(err) {
