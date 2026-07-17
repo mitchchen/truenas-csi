@@ -1699,9 +1699,36 @@ func (s *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolu
 	s.deleteSnapshotTaskForDataset(ctx, datasetPath)
 
 	// Delete the dataset
-	err = s.driver.Client().DeleteDataset(ctx, datasetPath, &client.DatasetDeleteOptions{Recursive: true, Force: true})
-	if err != nil && !client.IsNotFoundError(err) {
-		return nil, status.Errorf(codes.Internal, "failed to delete volume: %v", err)
+	// TrueNAS tears down iSCSI resources asynchronously.  A dataset-delete call
+	// made immediately after that teardown may return before the ZVOL actually
+	// disappears, which would otherwise make Kubernetes consider the volume
+	// deleted while leaving storage behind.  Verify the postcondition and retry
+	// within the CSI operation deadline.
+	const datasetDeleteAttempts = 3
+	for attempt := 1; attempt <= datasetDeleteAttempts; attempt++ {
+		err = s.driver.Client().DeleteDataset(ctx, datasetPath, &client.DatasetDeleteOptions{Recursive: true, Force: true})
+		if err != nil && !client.IsNotFoundError(err) {
+			if attempt == datasetDeleteAttempts {
+				return nil, status.Errorf(codes.Internal, "failed to delete volume: %v", err)
+			}
+		} else {
+			_, getErr := s.driver.Client().GetDataset(ctx, datasetPath)
+			if client.IsNotFoundError(getErr) {
+				break
+			}
+			if getErr != nil {
+				return nil, status.Errorf(codes.Internal, "failed to verify volume deletion: %v", getErr)
+			}
+			if attempt == datasetDeleteAttempts {
+				return nil, status.Errorf(codes.Internal, "failed to delete volume: dataset %s still exists after %d attempts", datasetPath, datasetDeleteAttempts)
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, status.Errorf(codes.DeadlineExceeded, "timed out deleting volume: %v", ctx.Err())
+		case <-time.After(time.Second * time.Duration(attempt)):
+		}
 	}
 
 	s.driver.Log().V(LogLevelDebug).Info("Volume deleted successfully", "volumeId", req.VolumeId)
