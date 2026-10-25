@@ -754,6 +754,37 @@ func (c *Client) GetISCSITargetByName(ctx context.Context, name string) (*ISCSIT
 	return &targets[0], nil
 }
 
+// DeleteTargetOnlyISCSITargetByName deletes an unassociated iSCSI target by its
+// deterministic CSI name. A missing target is treated as already deleted so
+// callers can safely retry cleanup after a partially completed DeleteVolume
+// operation. Targets with an association are left untouched.
+func (c *Client) DeleteTargetOnlyISCSITargetByName(ctx context.Context, name string) error {
+	target, err := c.GetISCSITargetByName(ctx, name)
+	if err != nil {
+		if IsNotFoundError(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to get iSCSI target %q: %w", name, err)
+	}
+
+	var targetExtents []ISCSITargetExtent
+	filters := [][]any{{"target", "=", target.ID}}
+	if err := c.Call(ctx, methodISCSITargetExtentQuery, []any{filters, &QueryOptions{}}, &targetExtents); err != nil {
+		return fmt.Errorf("failed to query iSCSI target-extent associations for target %d: %w", target.ID, err)
+	}
+	if len(targetExtents) != 0 {
+		return fmt.Errorf("iSCSI target %q is not target-only", name)
+	}
+
+	if err := c.Call(ctx, methodISCSITargetDelete, []any{target.ID, false, false}, nil); err != nil {
+		if IsNotFoundError(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to delete iSCSI target %d: %w", target.ID, err)
+	}
+	return nil
+}
+
 // GetISCSIExtentByName retrieves an iSCSI extent by its name.
 // Returns ErrNotFound if the extent does not exist.
 func (c *Client) GetISCSIExtentByName(ctx context.Context, name string) (*ISCSIExtent, error) {

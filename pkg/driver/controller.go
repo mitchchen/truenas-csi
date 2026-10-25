@@ -1634,6 +1634,13 @@ func (s *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolu
 	_, err = s.driver.Client().GetDataset(ctx, datasetPath)
 	if err != nil {
 		if client.IsNotFoundError(err) {
+			// The dataset may have disappeared after TrueNAS accepted a previous
+			// DeleteVolume but before its iSCSI target was removed. Recover that
+			// target by its deterministic CSI name; a missing target is success.
+			// Do not infer or remove any extent because the orphan is target-only.
+			if err := s.driver.Client().DeleteTargetOnlyISCSITargetByName(ctx, makeISCSITargetSuffix(req.VolumeId)); err != nil {
+				s.driver.Log().V(LogLevelDebug).Error(err, "Failed to delete orphaned iSCSI target", "volumeId", req.VolumeId)
+			}
 			s.driver.Log().V(LogLevelDebug).Info("Volume already deleted", "volumeId", req.VolumeId)
 			return &csi.DeleteVolumeResponse{}, nil
 		}

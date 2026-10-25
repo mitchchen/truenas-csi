@@ -456,6 +456,68 @@ func TestGetISCSITargetByName_NotFound(t *testing.T) {
 	assertTrue(t, errors.Is(err, ErrNotFound))
 }
 
+func TestDeleteTargetOnlyISCSITargetByName_TargetOnly(t *testing.T) {
+	mock := NewMockTrueNASServer()
+	defer mock.Close()
+
+	mock.SetResponseFunc(func(method string, params json.RawMessage) MockResponse {
+		switch method {
+		case methodISCSITargetQuery:
+			return MockResponse{Result: []ISCSITarget{MockISCSITarget(42, "csi-pvc-orphan", "")}}
+		case methodISCSITargetExtentQuery:
+			return MockResponse{Result: []ISCSITargetExtent{}}
+		case methodISCSITargetDelete:
+			return MockResponse{Result: true}
+		default:
+			return MockResponse{Result: nil}
+		}
+	})
+
+	client := connectTestClient(t, mock)
+	err := client.DeleteTargetOnlyISCSITargetByName(testContext(t), "csi-pvc-orphan")
+
+	assertNoError(t, err)
+	assertRequestCount(t, mock, methodISCSITargetQuery, 1)
+	assertRequestCount(t, mock, methodISCSITargetExtentQuery, 1)
+	assertRequestCount(t, mock, methodISCSITargetDelete, 1)
+}
+
+func TestDeleteTargetOnlyISCSITargetByName_MissingIsIdempotent(t *testing.T) {
+	mock := NewMockTrueNASServer()
+	defer mock.Close()
+
+	mock.SetResponse(methodISCSITargetQuery, MockResponse{Result: []ISCSITarget{}})
+
+	client := connectTestClient(t, mock)
+	err := client.DeleteTargetOnlyISCSITargetByName(testContext(t), "csi-pvc-missing")
+
+	assertNoError(t, err)
+	assertRequestCount(t, mock, methodISCSITargetQuery, 1)
+	assertRequestCount(t, mock, methodISCSITargetDelete, 0)
+}
+
+func TestDeleteTargetOnlyISCSITargetByName_AssociatedTargetIsUntouched(t *testing.T) {
+	mock := NewMockTrueNASServer()
+	defer mock.Close()
+
+	mock.SetResponseFunc(func(method string, params json.RawMessage) MockResponse {
+		switch method {
+		case methodISCSITargetQuery:
+			return MockResponse{Result: []ISCSITarget{MockISCSITarget(42, "csi-pvc-associated", "")}}
+		case methodISCSITargetExtentQuery:
+			return MockResponse{Result: []ISCSITargetExtent{MockISCSITargetExtent(9, 42, 7, 0)}}
+		default:
+			return MockResponse{Result: nil}
+		}
+	})
+
+	client := connectTestClient(t, mock)
+	err := client.DeleteTargetOnlyISCSITargetByName(testContext(t), "csi-pvc-associated")
+
+	assertError(t, err)
+	assertRequestCount(t, mock, methodISCSITargetDelete, 0)
+}
+
 func TestGetISCSITargetByID_Success(t *testing.T) {
 	mock := NewMockTrueNASServer()
 	defer mock.Close()
